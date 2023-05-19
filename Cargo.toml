@@ -1,15 +1,19 @@
 [package]
 name = "iceberg"
 version = "0.1.0"
-edition = "2023"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 rand = { version = "0.8" }
+chrono = { version = "0.4" }
+futures = { version = "0.3" }
 bytes = { version = "1" }
 uuid = { version = "1.3.0", features = ["v4"] }
 regex = { version = "1" }
+lazy_static = { version = "1" }
+url = { version = "2" }
 thiserror = { version = "1.0" }
 object_store = { version = "0.5.5", features = ["aws"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }

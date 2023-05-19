@@ -2,9 +2,11 @@ use std::fmt;
 use std::collections::HashMap;
 
 use uuid::Uuid;
+use regex::Regex;
 use serde::{Serialize, Deserialize};
 use serde_repr::{Serialize_repr, Deserialize_repr};
 use serde_json;
+use lazy_static::lazy_static;
 
 use crate::{IcebergError, IcebergResult};
 use crate::utils;
@@ -12,7 +14,7 @@ use crate::schema::Schema;
 use crate::partition::PartitionSpec;
 use crate::sort::SortOrder;
 use crate::transaction::Transaction;
-use crate::storage::{IcebergObjectStore, IcebergPath};
+use crate::storage::{IcebergStorage, IcebergPath};
 use crate::snapshot::{Snapshot, SnapshotLog, SnapshotReference};
 use crate::manifest::{ManifestList};
 
@@ -182,7 +184,7 @@ impl MetadataLog {
 
 pub struct IcebergTableState {
     // UUID identifying the latest snapshot of the table.
-    pub version_uuid: String,
+    pub version_uuid: Uuid,
     // Path to the current metadata file on the object store.
     pub metadata_path: IcebergPath,
 }
@@ -194,11 +196,11 @@ pub struct IcebergTable {
     /// Table metadata that includes schemas & snapshots
     pub metadata: Option<IcebergTableMetadata>,
     /// Used to access data and metadata files
-    pub storage: IcebergObjectStore,
+    pub storage: IcebergStorage,
 }
 
 impl IcebergTable {
-    pub fn new(storage: IcebergObjectStore) -> Self {
+    pub fn new(storage: IcebergStorage) -> Self {
         Self {
             state: None,
             metadata: None,
@@ -261,7 +263,7 @@ impl IcebergTable {
         &self,
         snapshot: &Snapshot
     ) -> IcebergResult<ManifestList> {
-        let path = IcebergPath::from_url(&snapshot.manifest_list)?;
+        let path = self.storage.create_path_from_url(&snapshot.manifest_list)?;
         let bytes = self.storage.get(&path).await?;
 
         ManifestList::decode(bytes.as_ref())
@@ -286,12 +288,12 @@ impl IcebergTable {
 
         // Generate a new UUID for this version, and set it only after the new metadata
         // file has been committed.
-        let new_version_uuid = Uuid::new_v4().to_string();
+        let new_version_uuid = Uuid::new_v4();
         let metadata_path = self.storage.create_metadata_path(
             &format!(
                 "{:05}-{}.metadata.json",
                 metadata.last_sequence_number,
-                new_version_uuid
+                new_version_uuid.to_string()
             )
         );
 
@@ -311,7 +313,15 @@ impl IcebergTable {
         Ok(())
     }
 
-    /// Initializes a new Iceberg table with the given schema.
+    /// Initializes a new Iceberg table with the given schema at the table's location.
+    /// This will create the first metadata file for the table, with the given schema
+    /// set as the current schema.
+    ///
+    /// # Errors
+    ///
+    /// This function may fail if the schema is invalid (empty), or if commiting the
+    /// metadata file to object store fails, in which case [`IcebergError::ObjectStore`]
+    /// is returned.
     pub async fn create(&mut self, schema: Schema) -> IcebergResult<()> {
         if schema.fields().is_empty() {
             Err(IcebergError::EmptySchema)
@@ -326,13 +336,196 @@ impl IcebergTable {
             self.commit(metadata).await
         }
     }
+
+    async fn get_latest_state(&self) -> IcebergResult<IcebergTableState> {
+        lazy_static! {
+            static ref METADATA_FILE_REGEX: Regex =
+                Regex::new(r#"^metadata/[0-9]+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}).metadata.json$"#)
+                .unwrap();
+        }
+
+        let objects = self.storage.list(Some(&IcebergPath::from("metadata"))).await?;
+
+        // Find the highest numbered metadata file.
+        let metadata_path = objects.into_iter()
+            .filter_map(|obj_meta| {
+                METADATA_FILE_REGEX.is_match(obj_meta.location.as_ref())
+                    .then(|| obj_meta.location)
+            })
+            .max_by(|p, q| p.as_ref().cmp(q.as_ref()))
+            .ok_or_else(|| {
+                IcebergError::MetadataNotFound(self.location().to_string())
+            })?;
+
+        let captures = METADATA_FILE_REGEX.captures(metadata_path.as_ref())
+            .ok_or_else(|| {
+                IcebergError::MetadataNotFound(self.location().to_string())
+            })?;
+
+        let uuid = Uuid::parse_str(captures.get(1).unwrap().as_str())
+            .map_err(|_| {
+                IcebergError::MetadataNotFound(self.location().to_string())
+            })?;
+
+        Ok(IcebergTableState {
+            version_uuid: uuid,
+            metadata_path: metadata_path
+        })
+    }
+
+    /// Loads an existing Iceberg table state from storage.
+    ///
+    /// # Errors
+    ///
+    /// This function returns [`IcebergError::MetadataNotFound`] if the table's metadata
+    /// could not be located. In this case the table's state is left untouched and
+    /// [`IcebergTable::create()`] can be called instead.
+    /// [`IcebergError::InvalidMetadata`] is returned if the table's metadata could be
+    /// found but could not be correctly parsed.
+    pub async fn load(&mut self) -> IcebergResult<()> {
+        let state = self.get_latest_state().await?;
+
+        let bytes = self.storage.get(&state.metadata_path).await?;
+
+        let metadata = serde_json::from_slice::<IcebergTableMetadata>(&bytes)
+            .map_err(|e| IcebergError::InvalidMetadata { source: e })?;
+
+        self.state = Some(state);
+        self.metadata = Some(metadata);
+
+        Ok(())
+    }
     
     pub fn new_transaction(&mut self) -> Transaction {
         Transaction::new(self)
     }
+}
 
-    // Load an existing Iceberg table state from storage.
-    pub fn load(&mut self) {
-        // TODO: Implement
+/// The main interface for creating or loading Iceberg tables.
+///
+/// This struct lets you load existing tables or create new ones easily.
+///
+/// # Examples
+///
+/// Load an Iceberg table from the local filesystem:
+///
+/// ```
+/// use iceberg::{IcebergTableLoader, IcebergResult};
+///
+/// #[tokio::main]
+/// async fn main() -> IcebergResult<()> {
+///     let table = IcebergTableLoader::from_url("file:///tmp/iceberg/users")
+///         .load().await;
+///
+///     match table {
+///         Ok(table) => println!("Table loaded"),
+///         Err(..) => println!("Table might not exist"),
+///     }
+///
+///     Ok(())
+/// }
+/// ```
+///
+/// Load an Iceberg table from S3, or create it with the given schema if it does not
+/// exist:
+///
+/// ```
+/// use std::collections::HashMap;
+/// use iceberg::{IcebergTableLoader, IcebergResult};
+/// use iceberg::schema::SchemaBuilder;
+///
+/// #[tokio::main]
+/// async fn main() -> IcebergResult<()> {
+///     let mut schema_builder = SchemaBuilder::new(0);
+///     schema_builder.add_field(schema_builder.new_int_field("user_id").build());
+///     let schema = schema_builder.build();
+///
+///     let storage_options = HashMap::from([
+///         ("aws_region".to_string(), "us-east-1".to_string()),
+///         ("aws_bucket_name".to_string(), "icerberg-bucket".to_string()),
+///         ("aws_access_key_id".to_string(), "A...".to_string()),
+///         ("aws_secret_access_key".to_string(), "eH...".to_string())
+///     ]);
+///
+///     let table = IcebergTableLoader::from_url("s3://iceberg-bucket/users")
+///         .with_storage_options(storage_options)
+///         .load_or_create(schema)
+///         .await;
+///
+///     match table {
+///         Ok(table) => println!("Table loaded or created"),
+///         Err(..) => println!("Failed loading or creating table"),
+///     }
+///
+///     Ok(())
+/// }
+/// ```
+pub struct IcebergTableLoader {
+    table_url: String,
+    storage_options: HashMap<String, String>
+}
+
+impl IcebergTableLoader {
+    pub fn from_url(table_url: &str) -> Self {
+        Self {
+            table_url: table_url.to_string(),
+            storage_options: HashMap::new(),
+        }
+    }
+
+    pub fn with_storage_options(mut self, storage_options: HashMap<String, String>) -> Self {
+        self.storage_options.extend(storage_options);
+        self
+    }
+
+    pub fn with_env_options(mut self) -> Self {
+        if let Ok(value) = std::env::var("AWS_DEFAULT_REGION") {
+            self.storage_options.insert("aws_region".to_string(), value);
+        }
+        if let Ok(value) = std::env::var("AWS_ACCESS_KEY_ID") {
+            self.storage_options.insert("aws_access_key_id".to_string(), value);
+        }
+        if let Ok(value) = std::env::var("AWS_SECRET_ACCESS_KEY") {
+            self.storage_options.insert("aws_secret_access_key".to_string(), value);
+        }
+
+        self
+    }
+
+    fn build(self) -> IcebergResult<IcebergTable> {
+        let storage = IcebergStorage::from_url(
+            &self.table_url,
+            self.storage_options,
+        )?;
+
+        Ok(IcebergTable::new(storage))
+    }
+
+    pub async fn load(self) -> IcebergResult<IcebergTable> {
+        let mut table = self.build()?;
+
+        table.load().await?;
+
+        Ok(table)
+    }
+
+    pub async fn load_or_create(self, schema: Schema) -> IcebergResult<IcebergTable> {
+        let mut table = self.build()?;
+
+        let result = table.load().await;
+        match result {
+            Ok(..) => {
+                Ok(table)
+            },
+            Err(err) => {
+                match err {
+                    IcebergError::MetadataNotFound(..) => {
+                        table.create(schema).await?;
+                        Ok(table)
+                    },
+                    _ => Err(err)
+                }
+            }
+        }
     }
 }

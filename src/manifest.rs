@@ -9,7 +9,7 @@ use serde::{
 };
 use serde_repr::{Serialize_repr, Deserialize_repr};
 
-use crate::{IcebergResult, IcebergTableVersion};
+use crate::{IcebergResult, IcebergError, IcebergTableVersion};
 use crate::schema::Schema;
 use crate::partition::PartitionSpec;
 
@@ -708,7 +708,8 @@ impl ManifestWriter {
         metadata.insert("schema-id".to_string(), manifest.schema_id.to_string());
         metadata.insert(
             "partition-spec".to_string(),
-            serde_json::to_string(&manifest.partition_spec.fields)?
+            serde_json::to_string(&manifest.partition_spec.fields)
+                .map_err(|e| IcebergError::SerializeJson { source: e })?
         );
         metadata.insert(
             "partition-spec-id".to_string(),

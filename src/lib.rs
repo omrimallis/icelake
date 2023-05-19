@@ -10,12 +10,13 @@ pub mod snapshot;
 pub mod partition;
 pub mod sort;
 pub mod manifest;
-pub mod builder;
 pub mod storage;
 pub mod transaction;
 
-pub use iceberg::{IcebergTable, IcebergTableVersion, IcebergTableMetadata};
-pub use builder::IcebergTableBuilder;
+pub use crate::iceberg::{
+    IcebergTable, IcebergTableVersion, IcebergTableMetadata,
+    IcebergTableLoader
+};
 
 pub type IcebergResult<T> = Result<T, IcebergError>;
 
@@ -23,6 +24,14 @@ pub type IcebergResult<T> = Result<T, IcebergError>;
 pub enum IcebergError {
     #[error("Iceberg error: {message}")]
     CustomError { message: String },
+
+    /// The table's metadata file could not be located. Usually this means the table
+    /// does not exist at the specified location.
+    #[error("Iceberg table metadata not found at {0}")]
+    MetadataNotFound(String),
+
+    #[error("Invalid table location: {0}")]
+    InvalidTableLocation(String),
 
     #[error("Iceberg table not initialized")]
     TableNotInitialized,
@@ -34,17 +43,24 @@ pub enum IcebergError {
     SchemaNotFound { schema_id: i32 },
 
     #[error("Error serializing table metadata to json: {source}")]
-    SerializeMetadataJson {#[from] source: serde_json::Error},
+    SerializeMetadataJson {source: serde_json::Error},
 
-    #[error("Error serializeing table schema to json: {source}")]
+    #[error("Error deserializing table metadata from json: {source}")]
+    InvalidMetadata {source: serde_json::Error},
+
+    #[error("Error serializing table schema to json: {source}")]
     SerializeSchemaJson { source: serde_json::Error },
 
-    #[error("Error serializing manifest file to Avro: {source}")]
-    SerializeManifestFile {#[from] source: apache_avro::Error},
+    /// Generic JSON serialization error.
+    #[error("Error serializing json")]
+    SerializeJson { source: serde_json::Error },
+
+    #[error("Error serializing or deserializing Avro: {source}")]
+    AvroError {#[from] source: apache_avro::Error},
 
     #[error("Invalid object store path: {source}")]
     InvalidPath {#[from] source: object_store::path::Error},
 
     #[error("Object storage error: {source}")]
-    Storage {#[from] source: object_store::Error},
+    ObjectStore {#[from] source: object_store::Error},
 }
