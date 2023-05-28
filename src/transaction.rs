@@ -30,6 +30,7 @@ pub trait TableOperation {
     ) -> IcebergResult<()>;
 }
 
+/// Used to append files to the table.
 pub struct AppendFilesOperation {
     data_files: Vec<DataFile>,
 }
@@ -134,7 +135,7 @@ impl<'a> Transaction<'a> {
     }
 
     /// Prepares a new table metadata based on the transactions's state created by the
-    /// inner operations. Writes all manifest list and manifest files to storage.
+    /// inner operations. Writes all manifest lists and manifest files to storage.
     async fn prepare_metadata(
         &mut self, state: TransactionState
     ) -> IcebergResult<IcebergTableMetadata> {
@@ -163,7 +164,7 @@ impl<'a> Transaction<'a> {
                 bytes::Bytes::from(state.manifest_list.encode()?)
             ).await?;
 
-            // Create a new snapshot pointing to the newly created manifest list file.
+            // Create a new snapshot pointing to the newly created manifest list.
             let snapshot = Snapshot {
                 snapshot_id: state.snapshot_id,
                 // Use current snapshot as parent, or None for first snapshot.
@@ -173,7 +174,7 @@ impl<'a> Transaction<'a> {
                 timestamp_ms: state.timestamp,
                 // Path to the manifest list file of this snapshot.
                 manifest_list: self.table.storage.to_uri(&manifest_list_path),
-                // Placeholder summary
+                // Snapshot statistics summary
                 summary: state.summary_builder.build(),
                 schema_id: Some(current_schema.id()),
             };
@@ -196,7 +197,9 @@ impl<'a> Transaction<'a> {
         let current_metadata = self.table.current_metadata()?;
 
         let manifest_list = match current_snapshot {
-            Some(snapshot) => self.table.read_manifest_list(snapshot).await?,
+            Some(current_snapshot) => {
+                self.table.read_manifest_list(current_snapshot).await?
+            },
             None => ManifestList::new()
         };
 

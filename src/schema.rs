@@ -186,6 +186,24 @@ pub struct StructField {
     // TODO: initial-default and write-default
 }
 
+impl StructField {
+    pub fn new(
+        id: i32,
+        name: &str,
+        required: bool,
+        r#type: SchemaType,
+        doc: Option<String>
+    ) -> Self {
+        Self {
+            id: id,
+            name: name.to_string(),
+            required: required,
+            r#type: r#type,
+            doc: doc,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 #[serde(rename_all = "kebab-case")]
 /// A Schema type that contains List  elements.
@@ -427,6 +445,10 @@ impl SchemaBuilder {
 
     pub fn new_int_field(&self, name: &str) -> FieldBuilder {
         self.new_primitive_field(name, PrimitiveType::Int)
+    }
+
+    pub fn new_long_field(&self, name: &str) -> FieldBuilder {
+        self.new_primitive_field(name, PrimitiveType::Long)
     }
 
     pub fn new_boolean_field(&self, name: &str) -> FieldBuilder {

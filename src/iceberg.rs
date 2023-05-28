@@ -18,7 +18,7 @@ use crate::storage::{IcebergStorage, IcebergPath};
 use crate::snapshot::{Snapshot, SnapshotLog, SnapshotReference};
 use crate::manifest::{ManifestList};
 
-#[derive(Debug, Clone, Serialize_repr, Deserialize_repr)]
+#[derive(Debug, Serialize_repr, Deserialize_repr, PartialEq, Clone)]
 #[repr(i32)]
 pub enum IcebergTableVersion {
     V1 = 1,
@@ -34,7 +34,7 @@ impl fmt::Display for IcebergTableVersion {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct IcebergTableMetadata {
     /// An integer version number for the format.
@@ -340,7 +340,10 @@ impl IcebergTable {
     async fn get_latest_state(&self) -> IcebergResult<IcebergTableState> {
         lazy_static! {
             static ref METADATA_FILE_REGEX: Regex =
-                Regex::new(r#"^metadata/[0-9]+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}).metadata.json$"#)
+                Regex::new(concat!(
+                    r#"^metadata/[0-9]+-"#,
+                    r#"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"#,
+                    r#".metadata.json$"#))
                 .unwrap();
         }
 
@@ -473,7 +476,10 @@ impl IcebergTableLoader {
         }
     }
 
-    pub fn with_storage_options(mut self, storage_options: HashMap<String, String>) -> Self {
+    pub fn with_storage_options(
+        mut self,
+        storage_options: HashMap<String, String>
+    ) -> Self {
         self.storage_options.extend(storage_options);
         self
     }
@@ -514,9 +520,7 @@ impl IcebergTableLoader {
 
         let result = table.load().await;
         match result {
-            Ok(..) => {
-                Ok(table)
-            },
+            Ok(..) => Ok(table),
             Err(err) => {
                 match err {
                     IcebergError::MetadataNotFound(..) => {
@@ -527,5 +531,63 @@ impl IcebergTableLoader {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{IcebergError, IcebergTableMetadata};
+    use crate::schema::{Schema, SchemaField, SchemaType, PrimitiveType};
+
+    fn create_schema(schema_id: i32) -> Schema {
+        Schema::new(schema_id, vec![
+            SchemaField::new(
+                0,
+                "id",
+                true,
+                SchemaType::Primitive(PrimitiveType::Long),
+                None
+            ),
+            SchemaField::new(
+                0,
+                "ts",
+                false,
+                SchemaType::Primitive(PrimitiveType::Timestamp),
+                None
+            ),
+            SchemaField::new(
+                0,
+                "user_id",
+                false,
+                SchemaType::Primitive(PrimitiveType::Int),
+                None
+            )
+        ])
+    }
+
+    #[test]
+    fn new_metadata() {
+        let schema0 = create_schema(0);
+        let schema1 = create_schema(1);
+        let metadata = IcebergTableMetadata::try_new(
+            "s3://bucket/path/to/table".to_string(),
+            vec![schema0, schema1],
+            1
+        ).unwrap();
+
+        assert_eq!(metadata.current_schema().id(), 1);
+    }
+
+    #[test]
+    fn new_metadata_with_incorrect_schema_id() {
+        let schema = create_schema(0);
+        assert!(matches!(
+            IcebergTableMetadata::try_new(
+                "s3://bucket/path/to/table".to_string(),
+                vec![schema],
+                1
+            ),
+            Err(IcebergError::SchemaNotFound {..})
+        ));
     }
 }
