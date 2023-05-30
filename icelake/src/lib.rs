@@ -16,8 +16,8 @@
 //! exist:
 //! ```rust
 //! use std::collections::HashMap;
-//! use iceberg::{IcebergTableLoader, IcebergResult};
-//! use iceberg::schema::SchemaBuilder;
+//! use icelake::{IcebergTableLoader, IcebergResult};
+//! use icelake::schema::SchemaBuilder;
 //!
 //! #[tokio::main]
 //! async fn main() -> IcebergResult<()> {

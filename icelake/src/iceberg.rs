@@ -430,7 +430,7 @@ impl IcebergTable {
 /// Load an Iceberg table from the local filesystem:
 ///
 /// ```rust
-/// use iceberg::{IcebergTableLoader, IcebergResult};
+/// use icelake::{IcebergTableLoader, IcebergResult};
 ///
 /// #[tokio::main]
 /// async fn main() -> IcebergResult<()> {

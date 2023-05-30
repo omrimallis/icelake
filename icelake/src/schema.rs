@@ -15,7 +15,7 @@
 //! Create a simple schema made of primitive types:
 //!
 //! ```rust
-//! use iceberg::schema::{Schema, SchemaField, SchemaType, PrimitiveType};
+//! use icelake::schema::{Schema, SchemaField, SchemaType, PrimitiveType};
 //!
 //! let schema_id = 0;
 //! let schema = Schema::new(schema_id, vec![
@@ -42,8 +42,8 @@
 //! An example of using a struct field for storing two nested string fields:
 //!
 //! ```rust
-//! use iceberg::schema::{Schema, SchemaField, SchemaType, PrimitiveType};
-//! use iceberg::schema::{StructType, StructField};
+//! use icelake::schema::{Schema, SchemaField, SchemaType, PrimitiveType};
+//! use icelake::schema::{StructType, StructField};
 //!
 //! let schema_id = 0;
 //! let schema = Schema::new(schema_id, vec![
