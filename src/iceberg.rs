@@ -549,14 +549,14 @@ mod tests {
                 None
             ),
             SchemaField::new(
-                0,
+                1,
                 "ts",
                 false,
                 SchemaType::Primitive(PrimitiveType::Timestamp),
                 None
             ),
             SchemaField::new(
-                0,
+                1,
                 "user_id",
                 false,
                 SchemaType::Primitive(PrimitiveType::Int),
@@ -581,6 +581,8 @@ mod tests {
     #[test]
     fn new_metadata_with_incorrect_schema_id() {
         let schema = create_schema(0);
+
+        // Schema id 1 is not in the list of schemas
         assert!(matches!(
             IcebergTableMetadata::try_new(
                 "s3://bucket/path/to/table".to_string(),
@@ -589,5 +591,99 @@ mod tests {
             ),
             Err(IcebergError::SchemaNotFound {..})
         ));
+    }
+
+    #[test]
+    fn deserialize_metadata() {
+        let metadata_json = r#"
+            {
+              "format-version" : 2,
+              "table-uuid" : "395c54df-2023-450b-bbde-11b18b1dcc90",
+              "location" : "s3://bucket/table",
+              "last-sequence-number" : 2,
+              "last-updated-ms" : 1681727363902,
+              "last-column-id" : 9,
+              "current-schema-id" : 0,
+              "schemas" : [ {
+                "type" : "struct",
+                "schema-id" : 0,
+                "fields" : [ {
+                  "id" : 1,
+                  "name" : "id",
+                  "required" : false,
+                  "type" : "int"
+                } ]
+              } ],
+              "default-spec-id" : 0,
+              "partition-specs" : [ {
+                "spec-id" : 0,
+                "fields" : [ ]
+              } ],
+              "last-partition-id" : 999,
+              "default-sort-order-id" : 0,
+              "sort-orders" : [ {
+                "order-id" : 0,
+                "fields" : [ ]
+              } ],
+              "properties" : {
+                "table_type" : "ICEBERG"
+              },
+              "current-snapshot-id" : 380809481963248367,
+              "snapshots" : [ {
+                "sequence-number" : 1,
+                "snapshot-id" : 8134731796600310831,
+                "timestamp-ms" : 1681727363693,
+                "summary" : {
+                  "operation" : "delete",
+                  "changed-partition-count" : "0",
+                  "total-records" : "0",
+                  "total-files-size" : "0",
+                  "total-data-files" : "0",
+                  "total-delete-files" : "0",
+                  "total-position-deletes" : "0",
+                  "total-equality-deletes" : "0"
+                },
+                "manifest-list" : "s3://bucket/table/metadata/snap-8134731796600310831-1-bc48b12a-048b-4b2f-8438-f6bfb17f2921.avro",
+                "schema-id" : 0
+              }, {
+                "sequence-number" : 2,
+                "snapshot-id" : 380809481963248367,
+                "parent-snapshot-id" : 8134731796600310831,
+                "timestamp-ms" : 1681727363902,
+                "summary" : {
+                  "operation" : "append",
+                  "added-data-files" : "1",
+                  "added-records" : "1000",
+                  "added-files-size" : "84834",
+                  "changed-partition-count" : "1",
+                  "total-records" : "1000",
+                  "total-files-size" : "84834",
+                  "total-data-files" : "1",
+                  "total-delete-files" : "0",
+                  "total-position-deletes" : "0",
+                  "total-equality-deletes" : "0"
+                },
+                "manifest-list" : "s3://bucket/table/metadata/snap-380809481963248367-1-f0cef43d-6447-4eb5-acb0-dafb4887b64e.avro",
+                "schema-id" : 0
+              } ],
+              "snapshot-log" : [ {
+                "timestamp-ms" : 1681727363902,
+                "snapshot-id" : 380809481963248367
+              } ],
+              "metadata-log" : [ {
+                "timestamp-ms" : 1681727362693,
+                "metadata-file" : "s3://bucket/table/metadata/00000-5af42d97-7af3-41af-83f0-1173a2ac8681.metadata.json"
+              } ]
+            }"#;
+
+        let metadata = serde_json::from_str::<IcebergTableMetadata>(metadata_json)
+            .unwrap();
+
+        assert_eq!(metadata.table_uuid, "395c54df-2023-450b-bbde-11b18b1dcc90");
+        assert_eq!(metadata.current_schema_id, 0);
+        assert_eq!(metadata.current_snapshot_id.unwrap(), 380809481963248367);
+        assert_eq!(metadata.snapshots.unwrap().len(), 2);
+        assert_eq!(metadata.snapshot_log.unwrap().len(), 1);
+        assert_eq!(metadata.metadata_log.unwrap().len(), 1);
     }
 }
