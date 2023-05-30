@@ -1,3 +1,4 @@
+//! Interface to Iceberg table manifest lists and manifest files.
 use std::fmt;
 use std::collections::HashMap;
 

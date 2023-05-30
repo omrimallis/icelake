@@ -1,5 +1,4 @@
-// Parts of this module were taken from
-// https://github.com/oliverdaff/iceberg-rs/
+//! Interface to Iceberg table partitions.
 use regex::Regex;
 use serde::{
     de::{self, IntoDeserializer},

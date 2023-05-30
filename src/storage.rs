@@ -1,3 +1,4 @@
+//! Backing storage for Iceberg tables.
 use std::sync::Arc;
 use std::collections::HashMap;
 
@@ -71,6 +72,15 @@ impl IcebergStorage {
         Ok(url)
     }
 
+    /// Initiailizes a new IcebergStorage from a URL and storage options.
+    ///
+    /// The URL determines the type of the backing object store. For example,
+    /// `s3://bucket/table/` will create an S3-backed Iceberg table and
+    /// `file:///path/to/table` will create it on the local filesystem.
+    ///
+    /// `storage_options` may include specific options like access credentials.
+    /// Valid keys are:
+    /// * S3 tables - `"aws_access_key_id"`, `"aws_secret_access_key"`, `"aws_region"`.
     pub fn from_url(
         location: &str,
         storage_options: HashMap<String, String>
@@ -331,7 +341,10 @@ impl std::fmt::Display for IcebergPath {
 
 /// Contains metadata about an object in an Iceberg table.
 pub struct IcebergObjectMeta {
+    /// Location of the object relative to the table's location.
     pub location: IcebergPath,
+    /// Last modification time.
     pub last_modified: chrono::DateTime<chrono::offset::Utc>,
+    /// Size of the object in bytes.
     pub size: usize,
 }

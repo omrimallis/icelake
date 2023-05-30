@@ -1,5 +1,76 @@
-// Parts of this module were taken from
-// https://github.com/oliverdaff/iceberg-rs/
+//! Iceberg table schema implementation.
+//!
+//! This module provides [`Schema`] which represents the schema of an Iceberg table. Each
+//! schema has a `schema_id` and a vector of fields represented by [`SchemaField`].
+//!
+//! In an Iceberg schema, each field has an associated type, represented in this module
+//! by [`SchemaType`]. The schema can be highly complex with nested fields such as
+//! [`SchemaType::Struct`].
+//!
+//! Each top-level and nested field has an associated id. Care must be taken to ensure
+//! that field ids are unique in the schema and consistent when evolving schemas.
+//!
+//! ## Creating a simple schema
+//!
+//! Create a simple schema made of primitive types:
+//!
+//! ```rust
+//! use iceberg::schema::{Schema, SchemaField, SchemaType, PrimitiveType};
+//!
+//! let schema_id = 0;
+//! let schema = Schema::new(schema_id, vec![
+//!     SchemaField::new(
+//!         0,
+//!         "id",
+//!         true,
+//!         SchemaType::Primitive(PrimitiveType::Long),
+//!         None
+//!     ),
+//!     SchemaField::new(
+//!         1,
+//!         "ts",
+//!         false,
+//!         SchemaType::Primitive(PrimitiveType::Timestamp),
+//!         None
+//!     )
+//! ]);
+//! ```
+//!
+//! ## Creating a schema with nested types
+//!
+//! Iceberg provides structs, lists and maps for creating complex nested fields.
+//! An example of using a struct field for storing two nested string fields:
+//!
+//! ```rust
+//! use iceberg::schema::{Schema, SchemaField, SchemaType, PrimitiveType};
+//! use iceberg::schema::{StructType, StructField};
+//!
+//! let schema_id = 0;
+//! let schema = Schema::new(schema_id, vec![
+//!     SchemaField::new(
+//!         0,
+//!         "user",
+//!         false,
+//!         SchemaType::Struct(StructType::new(vec![
+//!             StructField::new(
+//!                 1,
+//!                 "first_name",
+//!                 true,
+//!                 SchemaType::Primitive(PrimitiveType::String),
+//!                 None
+//!             ),
+//!             StructField::new(
+//!                 2,
+//!                 "last_name",
+//!                 true,
+//!                 SchemaType::Primitive(PrimitiveType::String),
+//!                 None
+//!             )
+//!         ])),
+//!         None
+//!     )
+//! ]);
+//! ```
 use std::cell::RefCell;
 use std::borrow::Cow;
 
@@ -14,7 +85,7 @@ use crate::{IcebergResult, IcebergError};
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 #[serde(rename_all = "lowercase")]
 #[serde(remote = "Self")]
-/// Primitive Types within a schema.
+/// An enum of possible primitive field types.
 pub enum PrimitiveType {
     /// True or False
     Boolean,
@@ -150,11 +221,12 @@ static MAP_TAG: &str = "map";
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 #[serde(rename_all = "kebab-case")]
-/// A struct is a tuple of typed values. Each field in the tuple is
-/// named and has an integer id that is unique in the table schema.
-/// Each field can be either optional or required, meaning that values can (or cannot) be null.
-/// Fields may be any type.
-/// Fields may have an optional comment or doc string.
+/// A complex field type that contains a tuple of nested fields.
+///
+/// Each nested field in the struct is named and has an integer id that is unique in the
+/// table schema.  Each field can be either optional or required, meaning that values
+/// can (or cannot) be null. Nested fields may be any type, including a [StructType].
+/// Nested fields may have an optional comment or doc string.
 pub struct StructType {
     /// Always set to "struct".
     pub r#type: Cow<'static, str>,
@@ -206,7 +278,7 @@ impl StructField {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 #[serde(rename_all = "kebab-case")]
-/// A Schema type that contains List  elements.
+/// A field type that represents a list of identical elements.
 pub struct ListType {
     /// Always set to "list".
     pub r#type: Cow<'static, str>,
@@ -232,7 +304,8 @@ impl ListType {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 #[serde(rename_all = "kebab-case")]
-/// A Schema type that contains Map elements.
+/// A complex field type that contains key-value pairs.
+///
 /// A map is a collection of key-value pairs with a key type and a value type.
 /// Both the key field and value field each have an integer id that is unique
 /// in the table schema. Map keys are required and map values can be either
@@ -275,19 +348,21 @@ impl MapType {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 #[serde(untagged)]
-/// A union type of all allowed Schema types.
+/// Represents the type of a field in an Iceberg table schema.
 pub enum SchemaType {
-    /// All the primitive types
+    /// A primitive field type.
     Primitive(PrimitiveType),
-    /// A Struct type
+    /// A struct field type.
     Struct(StructType),
-    /// A List type.
+    /// A list field type.
     List(ListType),
-    /// A Map type
+    /// A map field type.
     Map(MapType),
 }
 
 impl SchemaType {
+    /// Obtains the maximal id of all recursively-nested fields inside this type,
+    /// or `None` if this type is primitive.
     pub fn max_nested_field_id(&self) -> Option<i32> {
         match &self {
             // Primitive types don't have nested fields.
@@ -324,6 +399,7 @@ impl SchemaType {
     }
 }
 
+/// An Iceberg table schema.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct Schema {
@@ -338,6 +414,7 @@ pub struct Schema {
     schema: SchemaType,
 }
 
+/// A top-level field in the Iceberg table schema.
 pub type SchemaField = StructField;
 
 impl Schema {

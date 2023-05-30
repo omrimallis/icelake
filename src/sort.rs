@@ -1,5 +1,4 @@
-// Parts of this module were taken from
-// https://github.com/oliverdaff/iceberg-rs/
+//! Interface to Iceberg table ordering.
 use serde::{Deserialize, Serialize};
 
 use crate::partition::Transform;

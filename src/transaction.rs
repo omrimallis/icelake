@@ -1,3 +1,4 @@
+//! Interface to Iceberg table transactions.
 use rand::Rng;
 use uuid::Uuid;
 use bytes::Bytes;
@@ -78,13 +79,13 @@ impl TableOperation for AppendFilesOperation {
             .add_data_files(manifest.entries().len().try_into().unwrap());
 
         // Encode the on-disk manifest file.
-        let manifest_path = table.storage.create_metadata_path(
+        let manifest_path = table.storage().create_metadata_path(
             &format!("{}-m0.avro", Uuid::new_v4().to_string())
         );
 
         let writer = ManifestWriter::new(state.sequence_number, state.snapshot_id);
         let (manifest_content, manifest_file) = writer.write(
-            &table.storage.to_uri(&manifest_path),
+            &table.storage().to_uri(&manifest_path),
             manifest
         )?;
 
@@ -150,16 +151,16 @@ impl<'a> Transaction<'a> {
         // Write all files created by the operation to storage.
         for (path, content) in state.files {
             // TODO: Remove previously written files on failure.
-            self.table.storage.put(&path, content).await?
+            self.table.storage().put(&path, content).await?
         }
 
         if !state.manifest_list.is_empty() {
             // Write a new manifest list to storage
             let uuid = Uuid::new_v4().to_string();
-            let manifest_list_path = self.table.storage.create_metadata_path(
+            let manifest_list_path = self.table.storage().create_metadata_path(
                 &format!("snap-{}-1-{}.avro", state.snapshot_id, uuid)
             );
-            self.table.storage.put(
+            self.table.storage().put(
                 &manifest_list_path,
                 bytes::Bytes::from(state.manifest_list.encode()?)
             ).await?;
@@ -173,7 +174,7 @@ impl<'a> Transaction<'a> {
                 sequence_number: state.sequence_number,
                 timestamp_ms: state.timestamp,
                 // Path to the manifest list file of this snapshot.
-                manifest_list: self.table.storage.to_uri(&manifest_list_path),
+                manifest_list: self.table.storage().to_uri(&manifest_list_path),
                 // Snapshot statistics summary
                 summary: state.summary_builder.build(),
                 schema_id: Some(current_schema.id()),

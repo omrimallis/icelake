@@ -1,3 +1,4 @@
+//! Iceberg table implementation.
 use std::fmt;
 use std::collections::HashMap;
 
@@ -114,7 +115,7 @@ impl IcebergTableMetadata {
         let sort_order_id = sort_order.order_id;
 
         // Ensure current_schema_id is present in the list of schemas
-        let current_schema = 
+        let current_schema =
             schemas.iter().find(|&schema| schema.id() == current_schema_id)
             .ok_or(IcebergError::SchemaNotFound { schema_id: current_schema_id })?;
 
@@ -126,7 +127,7 @@ impl IcebergTableMetadata {
             table_uuid: Uuid::new_v4().to_string(),
             location: location,
             last_sequence_number: 0,
-            last_updated_ms: utils::current_time_ms()?, 
+            last_updated_ms: utils::current_time_ms()?,
             last_column_id: last_column_id,
             schemas: schemas,
             current_schema_id: current_schema_id,
@@ -192,14 +193,19 @@ pub struct IcebergTableState {
 pub struct IcebergTable {
     /// Latest state of the table, changes after each commit.
     /// Maybe be None for tables that were not initialized.
-    pub state: Option<IcebergTableState>,
+    state: Option<IcebergTableState>,
     /// Table metadata that includes schemas & snapshots
-    pub metadata: Option<IcebergTableMetadata>,
+    metadata: Option<IcebergTableMetadata>,
     /// Used to access data and metadata files
-    pub storage: IcebergStorage,
+    storage: IcebergStorage,
 }
 
+/// The main interface for working with Iceberg tables.
 impl IcebergTable {
+    /// Creates an uninitialized Iceberg table on the given storage.
+    ///
+    /// The table must be initialized with either [`IcebergTable::load()`] or
+    /// [`IcebergTable::create()`].
     pub fn new(storage: IcebergStorage) -> Self {
         Self {
             state: None,
@@ -208,16 +214,22 @@ impl IcebergTable {
         }
     }
 
+    /// Returns the full URL location of this table.
     pub fn location(&self) -> &str {
         self.storage.location()
+    }
+
+    /// Returns the underlying storage of this table.
+    pub fn storage(&self) -> &IcebergStorage {
+        &self.storage
     }
 
     /// Returns the currently set schema for the table.
     ///
     /// # Errors
     ///
-    /// This function will return `TableNotInitialized` if the table has not been
-    /// initialized through either `IcebergTable::create()` or `IcebergTable::load()`.
+    /// This function will return [`IcebergError::TableNotInitialized`] if the table has not been
+    /// initialized with either [`IcebergTable::create()`] or [`IcebergTable::load()`].
     pub fn current_schema(&self) -> IcebergResult<&Schema> {
         self.metadata.as_ref()
             .map(|metadata| metadata.current_schema())
@@ -229,8 +241,8 @@ impl IcebergTable {
     ///
     /// # Errors
     ///
-    /// This function will return `TableNotInitialized` if the table has not been
-    /// initialized through either `IcebergTable::create()` or `IcebergTable::load()`.
+    /// This function will return [`IcebergError::TableNotInitialized`] if the table has not been
+    /// initialized with either [`IcebergTable::create()`] or [`IcebergTable::load()`].
     pub fn current_snapshot(&self) -> IcebergResult<Option<&Snapshot>> {
         self.metadata.as_ref()
             .map(|metadata| metadata.current_snapshot())
@@ -241,8 +253,8 @@ impl IcebergTable {
     ///
     /// # Errors
     ///
-    /// This function will return `TableNotInitialized` if the table has not been
-    /// initialized through either `IcebergTable::create()` or `IcebergTable::load()`.
+    /// This function will return [`IcebergError::TableNotInitialized`] if the table has not been
+    /// initialized with either [`IcebergTable::create()`] or [`IcebergTable::load()`].
     pub fn current_metadata(&self) -> IcebergResult<&IcebergTableMetadata> {
         self.metadata.as_ref().ok_or(IcebergError::TableNotInitialized)
     }
@@ -251,8 +263,8 @@ impl IcebergTable {
     ///
     /// # Errors
     ///
-    /// This function will return `TableNotInitialized` if the table has not been
-    /// initialized through either `IcebergTable::create()` or `IcebergTable::load()`.
+    /// This function will return [`IcebergError::TableNotInitialized`] if the table has not been
+    /// initialized with either [`IcebergTable::create()`] or [`IcebergTable::load()`].
     pub fn current_metadata_uri(&self) -> IcebergResult<String> {
         self.state.as_ref().map(|state| self.storage.to_uri(&state.metadata_path))
             .ok_or(IcebergError::TableNotInitialized)
@@ -270,6 +282,9 @@ impl IcebergTable {
     }
 
     /// Commits the given metadata to the table, replacing the existing metadata.
+    ///
+    /// This is a low level interface. Prefer using [`IcebergTable::new_transaction()`]
+    /// to create a new [`Transaction`] and commit it instead.
     pub async fn commit(
         &mut self,
         mut metadata: IcebergTableMetadata,
@@ -398,7 +413,9 @@ impl IcebergTable {
 
         Ok(())
     }
-    
+
+    /// Initiates a new transaction on this table. Only a single transaction can be
+    /// created at any given time.
     pub fn new_transaction(&mut self) -> Transaction {
         Transaction::new(self)
     }
@@ -412,7 +429,7 @@ impl IcebergTable {
 ///
 /// Load an Iceberg table from the local filesystem:
 ///
-/// ```
+/// ```rust
 /// use iceberg::{IcebergTableLoader, IcebergResult};
 ///
 /// #[tokio::main]
@@ -428,47 +445,17 @@ impl IcebergTable {
 ///     Ok(())
 /// }
 /// ```
-///
-/// Load an Iceberg table from S3, or create it with the given schema if it does not
-/// exist:
-///
-/// ```
-/// use std::collections::HashMap;
-/// use iceberg::{IcebergTableLoader, IcebergResult};
-/// use iceberg::schema::SchemaBuilder;
-///
-/// #[tokio::main]
-/// async fn main() -> IcebergResult<()> {
-///     let mut schema_builder = SchemaBuilder::new(0);
-///     schema_builder.add_field(schema_builder.new_int_field("user_id").build());
-///     let schema = schema_builder.build();
-///
-///     let storage_options = HashMap::from([
-///         ("aws_region".to_string(), "us-east-1".to_string()),
-///         ("aws_bucket_name".to_string(), "icerberg-bucket".to_string()),
-///         ("aws_access_key_id".to_string(), "A...".to_string()),
-///         ("aws_secret_access_key".to_string(), "eH...".to_string())
-///     ]);
-///
-///     let table = IcebergTableLoader::from_url("s3://iceberg-bucket/users")
-///         .with_storage_options(storage_options)
-///         .load_or_create(schema)
-///         .await;
-///
-///     match table {
-///         Ok(table) => println!("Table loaded or created"),
-///         Err(..) => println!("Failed loading or creating table"),
-///     }
-///
-///     Ok(())
-/// }
-/// ```
 pub struct IcebergTableLoader {
     table_url: String,
     storage_options: HashMap<String, String>
 }
 
 impl IcebergTableLoader {
+    /// Creates a new IcebergTableLoader to load or create the table from the given URL.
+    ///
+    /// The URL determines the type of the backing object store. For example,
+    /// `s3://bucket/table/` will create an S3-backed Iceberg table and
+    /// `file:///path/to/table` will create it on the local filesystem.
     pub fn from_url(table_url: &str) -> Self {
         Self {
             table_url: table_url.to_string(),
@@ -476,6 +463,9 @@ impl IcebergTableLoader {
         }
     }
 
+    /// Sets options for the storage, e.g. access credentials. The valid options depend
+    /// on the type of storage as determined by the table url. For a list of valid
+    /// options see [`IcebergStorage::from_url`].
     pub fn with_storage_options(
         mut self,
         storage_options: HashMap<String, String>
@@ -484,6 +474,9 @@ impl IcebergTableLoader {
         self
     }
 
+    /// Attempts to read storage options from environment variables.
+    /// Currently supported environment variables:
+    /// * AWS - `AWS_ACCESS_KEY_ID`, `AWS_DEFAULT_REGION`, `AWS_SECRET_ACCESS_KEY`
     pub fn with_env_options(mut self) -> Self {
         if let Ok(value) = std::env::var("AWS_DEFAULT_REGION") {
             self.storage_options.insert("aws_region".to_string(), value);
@@ -507,6 +500,15 @@ impl IcebergTableLoader {
         Ok(IcebergTable::new(storage))
     }
 
+    /// Loads the state of an existing Iceberg table from storage.
+    ///
+    /// # Errors
+    ///
+    /// This function returns [`IcebergError::MetadataNotFound`] if the table's metadata
+    /// could not be located.  [`IcebergError::InvalidMetadata`] is returned if the
+    /// table's metadata could be found but could not be correctly parsed.
+    /// [`IcebergError::ObjectStore`] could be returned if there was an error reading
+    /// from the object storage.
     pub async fn load(self) -> IcebergResult<IcebergTable> {
         let mut table = self.build()?;
 
@@ -515,6 +517,13 @@ impl IcebergTableLoader {
         Ok(table)
     }
 
+    /// Loads the state of an existing Iceberg table from storage, or creates it if it
+    /// does not exist.
+    ///
+    /// # Errors
+    ///
+    /// [`IcebergError::ObjectStore`] could be returned if there was an error reading
+    /// or writing to the object storage.
     pub async fn load_or_create(self, schema: Schema) -> IcebergResult<IcebergTable> {
         let mut table = self.build()?;
 

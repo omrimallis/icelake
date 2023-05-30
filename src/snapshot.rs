@@ -1,3 +1,4 @@
+//! Inteface to Iceberg table snapshots.
 use std::collections::HashMap;
 
 use serde::{Serialize, Deserialize};
