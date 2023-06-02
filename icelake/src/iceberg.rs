@@ -554,22 +554,19 @@ mod tests {
                 0,
                 "id",
                 true,
-                SchemaType::Primitive(PrimitiveType::Long),
-                None
+                SchemaType::Primitive(PrimitiveType::Long)
             ),
             SchemaField::new(
                 1,
                 "ts",
                 false,
-                SchemaType::Primitive(PrimitiveType::Timestamp),
-                None
+                SchemaType::Primitive(PrimitiveType::Timestamp)
             ),
             SchemaField::new(
                 1,
                 "user_id",
                 false,
-                SchemaType::Primitive(PrimitiveType::Int),
-                None
+                SchemaType::Primitive(PrimitiveType::Int)
             )
         ])
     }

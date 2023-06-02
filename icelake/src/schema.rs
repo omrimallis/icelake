@@ -23,15 +23,13 @@
 //!         0,
 //!         "id",
 //!         true,
-//!         SchemaType::Primitive(PrimitiveType::Long),
-//!         None
+//!         SchemaType::Primitive(PrimitiveType::Long)
 //!     ),
 //!     SchemaField::new(
 //!         1,
 //!         "ts",
 //!         false,
-//!         SchemaType::Primitive(PrimitiveType::Timestamp),
-//!         None
+//!         SchemaType::Primitive(PrimitiveType::Timestamp)
 //!     )
 //! ]);
 //! ```
@@ -56,18 +54,15 @@
 //!                 1,
 //!                 "first_name",
 //!                 true,
-//!                 SchemaType::Primitive(PrimitiveType::String),
-//!                 None
+//!                 SchemaType::Primitive(PrimitiveType::String)
 //!             ),
 //!             StructField::new(
 //!                 2,
 //!                 "last_name",
 //!                 true,
-//!                 SchemaType::Primitive(PrimitiveType::String),
-//!                 None
+//!                 SchemaType::Primitive(PrimitiveType::String)
 //!             )
-//!         ])),
-//!         None
+//!         ]))
 //!     )
 //! ]);
 //! ```
@@ -263,6 +258,15 @@ impl StructField {
         id: i32,
         name: &str,
         required: bool,
+        r#type: SchemaType
+    ) -> Self {
+        StructField::new_with_doc(id, name, required, r#type, None)
+    }
+
+    pub fn new_with_doc(
+        id: i32,
+        name: &str,
+        required: bool,
         r#type: SchemaType,
         doc: Option<String>
     ) -> Self {
@@ -273,6 +277,16 @@ impl StructField {
             r#type: r#type,
             doc: doc,
         }
+    }
+
+    pub fn with_required(mut self, required: bool) -> Self {
+        self.required = required;
+        self
+    }
+
+    pub fn with_doc(mut self, doc: String) -> Self {
+        self.doc = Some(doc);
+        self
     }
 }
 
@@ -449,38 +463,33 @@ impl Schema {
     }
 }
 
-pub struct FieldBuilder {
-    field: SchemaField,
-}
-
-impl FieldBuilder {
-    pub fn new(field_id: i32, name: &str, r#type: SchemaType) -> Self {
-        Self {
-            field: SchemaField {
-                id: field_id,
-                name: name.to_string(),
-                required: false,
-                r#type: r#type,
-                doc: None,
-            }
-        }
-    }
-
-    pub fn required(mut self) -> Self {
-        self.field.required = true;
-        self
-    }
-
-    pub fn doc(mut self, doc: String) -> Self {
-        self.field.doc = Some(doc);
-        self
-    }
-
-    pub fn build(self) -> SchemaField {
-        self.field
-    }
-}
-
+/// Provides an interface for building Iceberg schemas with automatic field id
+/// assignment.
+///
+/// Normally when creating a [`Schema`] one has to manually assign field id to every
+/// schema id, including fields nested inside structs, lists and maps.
+/// `SchemaBuilder` internally tracks field ids instead and automatically assigns the
+/// next id to each new field.
+///
+/// # Examples
+///
+/// Build a schema with nested struct fields.
+///
+/// ```rust
+/// use icelake::schema::SchemaBuilder;
+///
+/// let schema_id = 0;
+/// let mut schema_builder = SchemaBuilder::new(schema_id);
+/// schema_builder.add_fields(vec![
+///     schema_builder.new_int_field("id").with_required(true),
+///     schema_builder.new_timestamp_field("ts"),
+///     schema_builder.new_struct_field("name", vec![
+///         schema_builder.new_string_field("first"),
+///         schema_builder.new_string_field("last")
+///     ])
+/// ]);
+/// let schema = schema_builder.build();
+/// ```
 pub struct SchemaBuilder {
     schema_id: i32,
     next_field_id: RefCell<i32>,
@@ -508,48 +517,54 @@ impl SchemaBuilder {
         self.next_field_id.replace_with(|&mut old| old + 1)
     }
 
-    pub fn new_primitive_field(&self, name: &str, r#type: PrimitiveType) -> FieldBuilder {
-        FieldBuilder::new(self.next_field_id(), name, SchemaType::Primitive(r#type))
+    pub fn new_primitive_field(
+        &self,
+        name: &str,
+        r#type: PrimitiveType
+    ) -> SchemaField {
+        SchemaField::new(
+            self.next_field_id(),
+            name,
+            false,
+            SchemaType::Primitive(r#type)
+        )
     }
 
-    pub fn new_timestamp_field(&self, name: &str) -> FieldBuilder {
+    pub fn new_timestamp_field(&self, name: &str) -> SchemaField {
         self.new_primitive_field(name, PrimitiveType::Timestamp)
     }
 
-    pub fn new_string_field(&self, name: &str) -> FieldBuilder {
+    pub fn new_string_field(&self, name: &str) -> SchemaField {
         self.new_primitive_field(name, PrimitiveType::String)
     }
 
-    pub fn new_int_field(&self, name: &str) -> FieldBuilder {
+    pub fn new_int_field(&self, name: &str) -> SchemaField {
         self.new_primitive_field(name, PrimitiveType::Int)
     }
 
-    pub fn new_long_field(&self, name: &str) -> FieldBuilder {
+    pub fn new_long_field(&self, name: &str) -> SchemaField {
         self.new_primitive_field(name, PrimitiveType::Long)
     }
 
-    pub fn new_boolean_field(&self, name: &str) -> FieldBuilder {
+    pub fn new_boolean_field(&self, name: &str) -> SchemaField {
         self.new_primitive_field(name, PrimitiveType::Boolean)
     }
 
-    pub fn new_double_field(&self, name: &str) -> FieldBuilder {
+    pub fn new_double_field(&self, name: &str) -> SchemaField {
         self.new_primitive_field(name, PrimitiveType::Double)
     }
 
-    pub fn new_list_field(&self, name: &str, subtype: SchemaType) -> FieldBuilder {
-        FieldBuilder {
-            field: SchemaField {
-                id: self.next_field_id(),
-                name: name.to_string(),
-                required: false,
-                r#type: SchemaType::List(ListType::new(
-                    self.next_field_id(),
-                    true,
-                    subtype
-                )),
-                doc: None,
-            }
-        }
+    pub fn new_list_field(&self, name: &str, subtype: SchemaType) -> SchemaField {
+        SchemaField::new(
+            self.next_field_id(),
+            name,
+            false,
+            SchemaType::List(ListType::new(
+                self.next_field_id(),
+                true,
+                subtype
+            ))
+        )
     }
 
     pub fn new_map_field(
@@ -558,28 +573,26 @@ impl SchemaBuilder {
         key_type: SchemaType,
         value_type: SchemaType,
         value_required: bool
-    ) -> FieldBuilder {
-        FieldBuilder {
-            field: SchemaField {
-                id: self.next_field_id(),
-                name: name.to_string(),
-                required: false,
-                r#type: SchemaType::Map(MapType::new(
-                    self.next_field_id(),
-                    key_type,
-                    self.next_field_id(),
-                    value_required,
-                    value_type
-                )),
-                doc: None
-            }
-        }
-    }
-
-    pub fn new_struct_field(&self, name: &str, subfields: Vec<SchemaField>) -> FieldBuilder {
-        FieldBuilder::new(
+    ) -> SchemaField {
+        SchemaField::new(
             self.next_field_id(),
             name,
+            false,
+            SchemaType::Map(MapType::new(
+                self.next_field_id(),
+                key_type,
+                self.next_field_id(),
+                value_required,
+                value_type
+            )),
+        )
+    }
+
+    pub fn new_struct_field(&self, name: &str, subfields: Vec<SchemaField>) -> SchemaField {
+        SchemaField::new(
+            self.next_field_id(),
+            name,
+            false,
             SchemaType::Struct(StructType::new(subfields))
         )
     }

@@ -23,8 +23,11 @@
 //! async fn main() -> IcebergResult<()> {
 //!     let schema_id = 0;
 //!     let mut schema_builder = SchemaBuilder::new(schema_id);
-//!     schema_builder.add_field(schema_builder.new_int_field("user_id").build());
-//!     schema_builder.add_field(schema_builder.new_timestamp_field("ts").build());
+//!     schema_builder.add_fields(vec![
+//!         schema_builder.new_int_field("id").with_required(true),
+//!         schema_builder.new_int_field("user_id"),
+//!         schema_builder.new_timestamp_field("ts"),
+//!     ]);
 //!     let schema = schema_builder.build();
 //!
 //!     let storage_options = HashMap::from([
