@@ -106,7 +106,7 @@ pub enum PrimitiveType {
     /// Timestamp without timezone
     Timestamp,
     /// Timestamp with timezone
-    Timestampz,
+    Timestamptz,
     /// Arbitrary-length character sequences
     String,
     /// Universally Unique Identifiers
@@ -410,6 +410,12 @@ impl SchemaType {
                 Some(max)
             }
         }
+    }
+}
+
+impl std::fmt::Display for SchemaType {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{self:?}")
     }
 }
 

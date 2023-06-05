@@ -3,11 +3,11 @@ use rand::Rng;
 use uuid::Uuid;
 use bytes::Bytes;
 
-use crate::{IcebergTable, IcebergTableMetadata, IcebergResult};
+use crate::{IcebergTable, IcebergTableMetadata, IcebergFile, IcebergResult};
 use crate::utils;
 use crate::manifest::{
     ManifestList, Manifest, ManifestContentType,
-    ManifestEntry, ManifestEntryStatus, 
+    ManifestEntry, ManifestEntryStatus,
     ManifestWriter,
     DataFile
 };
@@ -75,26 +75,28 @@ impl TableOperation for AppendFilesOperation {
 
         // Update the snapshot summary
         state.summary_builder
-            .operation(SnapshotOperation::Append) 
+            .operation(SnapshotOperation::Append)
             .add_data_files(manifest.entries().len().try_into().unwrap());
 
-        // Encode the on-disk manifest file.
-        let manifest_path = table.storage().create_metadata_path(
-            &format!("{}-m0.avro", Uuid::new_v4().to_string())
-        );
-
-        let writer = ManifestWriter::new(state.sequence_number, state.snapshot_id);
-        let (manifest_content, manifest_file) = writer.write(
-            &table.storage().to_uri(&manifest_path),
-            manifest
+        let mut file = table.new_metadata_file(
+            &format!("{}-m0.avro", Uuid::new_v4().to_string()),
+            Bytes::new()
         )?;
+
+        // Encode the on-disk manifest file.
+        let writer = ManifestWriter::new(state.sequence_number, state.snapshot_id);
+        let (manifest_content, manifest_file_entry) = writer.write(
+            &file.url(), manifest
+        )?;
+
+        file.set_bytes(manifest_content);
 
         // Update the manifest list with a ManifestFile pointing to the new
         // manifest file.
-        state.manifest_list.push(manifest_file);
+        state.manifest_list.push(manifest_file_entry);
 
         // Add the manifest to the list of files to be written to storage.
-        state.files.push((manifest_path, manifest_content));
+        state.files.push(file);
 
         Ok(())
     }
@@ -113,9 +115,8 @@ pub struct TransactionState {
     summary_builder: SnapshotSummaryBuilder,
     /// Contains the full new list of manifests.
     manifest_list: ManifestList,
-    /// Contains list of files to be written to the table's storage. Each entry stores
-    /// the path of the file and its content.
-    files: Vec<(IcebergPath, Bytes)>
+    /// List of files pending to be written to the table's storage.
+    files: Vec<IcebergFile>
 }
 
 pub struct Transaction<'a> {
@@ -131,6 +132,7 @@ impl<'a> Transaction<'a> {
         }
     }
 
+    /// Sets the operation to be commited by this transaction.
     pub fn set_operation(&mut self, operation: Box<dyn TableOperation>) {
         self.operation = Some(operation);
     }
@@ -143,27 +145,26 @@ impl<'a> Transaction<'a> {
         let current_schema = self.table.current_schema()?;
         let current_snapshot = self.table.current_snapshot()?;
         let current_metadata = self.table.current_metadata()?;
-        
+
         let mut new_metadata = (*current_metadata).clone();
         new_metadata.last_updated_ms = state.timestamp;
         new_metadata.last_sequence_number = state.sequence_number;
 
         // Write all files created by the operation to storage.
-        for (path, content) in state.files {
+        for file in state.files {
             // TODO: Remove previously written files on failure.
-            self.table.storage().put(&path, content).await?
+            file.save().await?;
         }
 
         if !state.manifest_list.is_empty() {
             // Write a new manifest list to storage
             let uuid = Uuid::new_v4().to_string();
-            let manifest_list_path = self.table.storage().create_metadata_path(
-                &format!("snap-{}-1-{}.avro", state.snapshot_id, uuid)
-            );
-            self.table.storage().put(
-                &manifest_list_path,
-                bytes::Bytes::from(state.manifest_list.encode()?)
-            ).await?;
+            let manifest_list_file = self.table.new_metadata_file(
+                &format!("snap-{}-1-{}.avro", state.snapshot_id, uuid),
+                Bytes::from(state.manifest_list.encode()?)
+            )?;
+
+            manifest_list_file.save().await?;
 
             // Create a new snapshot pointing to the newly created manifest list.
             let snapshot = Snapshot {
@@ -174,7 +175,7 @@ impl<'a> Transaction<'a> {
                 sequence_number: state.sequence_number,
                 timestamp_ms: state.timestamp,
                 // Path to the manifest list file of this snapshot.
-                manifest_list: self.table.storage().to_uri(&manifest_list_path),
+                manifest_list: manifest_list_file.url(),
                 // Snapshot statistics summary
                 summary: state.summary_builder.build(),
                 schema_id: Some(current_schema.id()),

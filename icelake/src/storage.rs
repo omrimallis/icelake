@@ -9,7 +9,7 @@ use object_store::{
     Error as ObjectStoreError,
     local::LocalFileSystem,
     aws::AmazonS3Builder,
-    path::Path,
+    path::{Path, PathPart},
     path::Error as PathError
 };
 use chrono;
@@ -220,6 +220,15 @@ impl IcebergStorage {
         Ok(bytes)
     }
 
+    /// Wraps the `delete()` method of the underlying object store.
+    pub async fn delete(&self, path: &IcebergPath) -> IcebergResult<()> {
+        self.object_store.delete(
+            &self.to_object_store_path(Some(path)).unwrap()
+        ).await?;
+
+        Ok(())
+    }
+
     pub async fn list(
         &self,
         path: Option<&IcebergPath>
@@ -249,16 +258,6 @@ impl IcebergStorage {
         }
 
         Ok(objects)
-    }
-
-    /// Creates a path to a new metadata file in the table backed by this storage.
-    pub fn create_metadata_path(&self, object_name: &str) -> IcebergPath {
-        IcebergPath { inner: Path::from_iter(["metadata", object_name]) }
-    }
-
-    /// Creates a path to a new data file in the table backed by this storage.
-    pub fn create_data_path(&self, object_name: &str) -> IcebergPath {
-        IcebergPath { inner: Path::from_iter(["data", object_name]) }
     }
 
     /// Creates an IcebergPath with the relative path to a table object from
@@ -295,6 +294,7 @@ impl IcebergStorage {
 /// differences in how object_store handles local filesystems and object stores.
 ///
 /// An IcebergPath is always relative to the location of the table.
+#[derive(Clone)]
 pub struct IcebergPath {
     inner: object_store::path::Path,
 }
@@ -330,6 +330,19 @@ impl From<&str> for IcebergPath {
 impl From<String> for IcebergPath {
     fn from(value: String) -> Self {
         Self { inner: object_store::path::Path::from(value) }
+    }
+}
+
+impl<I> FromIterator<I> for IcebergPath
+where
+    I: Into<String>
+{
+    fn from_iter<T: IntoIterator<Item = I>>(iter: T) -> Self {
+        Self {
+            inner: Path::from_iter(
+               T::into_iter(iter).map(|s| PathPart::from(s.into()))
+            )
+        }
     }
 }
 

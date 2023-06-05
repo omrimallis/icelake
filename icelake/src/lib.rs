@@ -59,6 +59,7 @@
 use thiserror;
 use object_store;
 use serde_json;
+use arrow;
 
 mod utils;
 
@@ -70,10 +71,12 @@ pub mod sort;
 pub mod manifest;
 pub mod storage;
 pub mod transaction;
+pub mod writer;
+pub mod arrow_schema;
 
 pub use crate::iceberg::{
     IcebergTable, IcebergTableVersion, IcebergTableMetadata,
-    IcebergTableLoader
+    IcebergTableLoader, IcebergFile
 };
 
 /// A result type returned by functions in this crate.
@@ -101,13 +104,13 @@ pub enum IcebergError {
     #[error("Iceberg table not initialized")]
     TableNotInitialized,
 
-    /// Attempted to create an Iceberg table with an empty schema.
-    #[error("Can't create table with empty schema")]
-    EmptySchema,
-
     /// Attempted to create an Iceberg table with a non existent schema id.
     #[error("Schema with schema id {schema_id} not found in schema list")]
     SchemaNotFound { schema_id: i32 },
+
+    /// An error with creating an Iceberg table schema.
+    #[error("Schema error: {message}")]
+    SchemaError { message: String },
 
     /// Failed serializing the table's metadata to json.
     #[error("Error serializing table metadata to json: {source}")]
@@ -137,4 +140,16 @@ pub enum IcebergError {
     /// An error from the underlying object storage.
     #[error("Object storage error: {source}")]
     ObjectStore {#[from] source: object_store::Error},
+
+    /// An error related to the Parquet file format.
+    #[error("Parquet error: {source}")]
+    ParquetError {#[from] source: parquet::errors::ParquetError},
+
+    /// A system I/O error
+    #[error("I/O error: {source}")]
+    IoError {#[from] source: std::io::Error},
+
+    /// Apache Arrow error
+    #[error("Error in Arrow library: {source}")]
+    ArrowError{#[from] source: arrow::error::ArrowError},
 }

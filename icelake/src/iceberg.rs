@@ -1,13 +1,16 @@
 //! Iceberg table implementation.
 use std::fmt;
+use std::sync::Arc;
 use std::collections::HashMap;
 
 use uuid::Uuid;
+use bytes::Bytes;
 use regex::Regex;
 use serde::{Serialize, Deserialize};
 use serde_repr::{Serialize_repr, Deserialize_repr};
 use serde_json;
 use lazy_static::lazy_static;
+use murmur3::murmur3_32;
 
 use crate::{IcebergError, IcebergResult};
 use crate::utils;
@@ -197,7 +200,7 @@ pub struct IcebergTable {
     /// Table metadata that includes schemas & snapshots
     metadata: Option<IcebergTableMetadata>,
     /// Used to access data and metadata files
-    storage: IcebergStorage,
+    storage: Arc<IcebergStorage>,
 }
 
 /// The main interface for working with Iceberg tables.
@@ -206,7 +209,7 @@ impl IcebergTable {
     ///
     /// The table must be initialized with either [`IcebergTable::load()`] or
     /// [`IcebergTable::create()`].
-    pub fn new(storage: IcebergStorage) -> Self {
+    pub fn new(storage: Arc<IcebergStorage>) -> Self {
         Self {
             state: None,
             metadata: None,
@@ -220,8 +223,8 @@ impl IcebergTable {
     }
 
     /// Returns the underlying storage of this table.
-    pub fn storage(&self) -> &IcebergStorage {
-        &self.storage
+    pub fn storage(&self) -> Arc<IcebergStorage> {
+        self.storage.clone()
     }
 
     /// Returns the currently set schema for the table.
@@ -301,28 +304,30 @@ impl IcebergTable {
            }
        }
 
+        let json = serde_json::to_string_pretty(&metadata)
+            .map_err(|e| IcebergError::SerializeMetadataJson { source: e })?;
+
         // Generate a new UUID for this version, and set it only after the new metadata
         // file has been committed.
         let new_version_uuid = Uuid::new_v4();
-        let metadata_path = self.storage.create_metadata_path(
+        let metadata_file = self.new_metadata_file(
             &format!(
                 "{:05}-{}.metadata.json",
                 metadata.last_sequence_number,
                 new_version_uuid.to_string()
-            )
-        );
+            ),
+            Bytes::from(json)
+        )?;
 
-        let json = serde_json::to_string_pretty(&metadata)
-            .map_err(|e| IcebergError::SerializeMetadataJson { source: e })?;
 
         // TODO: This should be an atomic operation.
         // TODO: Testing for failures is needed.
-        self.storage.put(&metadata_path, bytes::Bytes::from(json)).await?;
+        metadata_file.save().await?;
 
         self.metadata = Some(metadata);
         self.state = Some(IcebergTableState {
             version_uuid: new_version_uuid,
-            metadata_path: metadata_path,
+            metadata_path: metadata_file.path().clone(),
         });
 
         Ok(())
@@ -339,7 +344,9 @@ impl IcebergTable {
     /// is returned.
     pub async fn create(&mut self, schema: Schema) -> IcebergResult<()> {
         if schema.fields().is_empty() {
-            Err(IcebergError::EmptySchema)
+            Err(IcebergError::SchemaError {
+                message: "schema is empty".to_string()
+            })
         } else {
             let current_schema_id = schema.id();
             let metadata = IcebergTableMetadata::try_new(
@@ -419,6 +426,42 @@ impl IcebergTable {
     pub fn new_transaction(&mut self) -> Transaction {
         Transaction::new(self)
     }
+
+    /// Creates a new data file for this table.
+    ///
+    /// This function assigns a path for a new file but does not save its content
+    /// to storage. Call [`save()`](IcebergFile::save) on the result to save it.
+    pub fn new_data_file(
+        &self,
+        filename: &str,
+        bytes: Bytes
+    ) -> IcebergResult<IcebergFile> {
+        // Prefix every data file with a hash component.
+        let hash = murmur3_32(&mut std::io::Cursor::new(filename), 0)?;
+        let hash: [u8; 4] = hash.to_be_bytes();
+
+        let path = IcebergPath::from_iter(vec![
+            "data",
+            &format!("{:02x}{:02x}{:02x}{:02x}",
+                hash[0], hash[1], hash[2], hash[3]
+            ),
+            filename
+        ]);
+
+        Ok(IcebergFile::new(self.storage.clone(), path, bytes))
+    }
+
+    pub fn new_metadata_file(
+        &self,
+        filename: &str,
+        bytes: Bytes
+    ) -> IcebergResult<IcebergFile> {
+        let path = IcebergPath::from_iter(vec![
+            "metadata", filename
+        ]);
+
+        Ok(IcebergFile::new(self.storage.clone(), path, bytes))
+    }
 }
 
 /// The main interface for creating or loading Iceberg tables.
@@ -497,7 +540,7 @@ impl IcebergTableLoader {
             self.storage_options,
         )?;
 
-        Ok(IcebergTable::new(storage))
+        Ok(IcebergTable::new(Arc::new(storage)))
     }
 
     /// Loads the state of an existing Iceberg table from storage.
@@ -540,6 +583,54 @@ impl IcebergTableLoader {
                 }
             }
         }
+    }
+}
+
+pub struct IcebergFile {
+    storage: Arc<IcebergStorage>,
+    path: IcebergPath,
+    bytes: Bytes
+}
+
+impl IcebergFile {
+    pub fn new(
+        storage: Arc<IcebergStorage>,
+        path: IcebergPath,
+        bytes: Bytes
+    ) -> Self {
+        Self {
+            storage: storage,
+            path: path,
+            bytes: bytes
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// Returns the relative path of this file.
+    pub fn path(&self) -> &IcebergPath {
+        &self.path
+    }
+
+    /// Returns the full URL of this file.
+    pub fn url(&self) -> String {
+        self.storage.to_uri(&self.path)
+    }
+
+    pub fn set_bytes(&mut self, bytes: Bytes) {
+        self.bytes = bytes;
+    }
+
+    /// Saves the file to the table's object store.
+    pub async fn save(&self) -> IcebergResult<()> {
+        self.storage.put(&self.path, self.bytes.clone()).await
+    }
+
+    /// Deletes the file from the table's object store.
+    pub async fn delete(&self) -> IcebergResult<()> {
+        self.storage.delete(&self.path).await
     }
 }
 
