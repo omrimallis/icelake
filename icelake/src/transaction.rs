@@ -15,7 +15,6 @@ use crate::snapshot::{
     Snapshot, SnapshotSummary, SnapshotSummaryBuilder,
     SnapshotOperation, SnapshotLog
 };
-use crate::partition::PartitionSpec;
 use crate::storage::IcebergPath;
 
 pub struct TableFile {
@@ -49,11 +48,11 @@ impl AppendFilesOperation {
         state: &mut TransactionState,
     ) -> IcebergResult<Manifest> {
         // Create a new manifest with the list of new files.
-        let mut manifest = Manifest::try_new(
-            table.current_schema()?,
-            PartitionSpec::new(),
+        let mut manifest = Manifest::new(
+            table.current_schema()?.clone(),
+            table.current_partition_spec()?.clone(),
             ManifestContentType::Data
-        )?;
+        );
         for data_file in &self.data_files {
             manifest.add_manifest_entry(ManifestEntry::new(
                 ManifestEntryStatus::Added,

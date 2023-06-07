@@ -112,6 +112,10 @@ pub enum IcebergError {
     #[error("Schema error: {message}")]
     SchemaError { message: String },
 
+    /// Error with Iceberg table partitioning.
+    #[error("Partition error: {message}")]
+    PartitionError { message: String },
+
     /// Failed serializing the table's metadata to json.
     #[error("Error serializing table metadata to json: {source}")]
     SerializeMetadataJson {source: serde_json::Error},

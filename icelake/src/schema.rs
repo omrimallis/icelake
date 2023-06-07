@@ -455,7 +455,7 @@ impl Schema {
         self.schema.max_nested_field_id().unwrap()
     }
 
-    pub fn fields(&self) -> &Vec<SchemaField> {
+    pub fn fields(&self) -> &[SchemaField] {
         match &self.schema {
             SchemaType::Struct(s) => &s.fields,
             _ => panic!("unexpected schema type")

@@ -1,14 +1,22 @@
 //! Interface to Iceberg table partitions.
+use std::collections::HashSet;
+
 use regex::Regex;
 use serde::{
     de::{self, IntoDeserializer},
     Deserialize, Deserializer, Serialize,
 };
 
+use crate::{IcebergResult, IcebergError};
+use crate::schema::{
+    Schema, SchemaType, StructField,
+    StructType, PrimitiveType
+};
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 #[serde(rename_all = "lowercase", remote = "Self")]
-/// A Transformation applied to each source column to produce a value.
-pub enum Transform {
+/// A Transformation applied to a source column to produce a partition value.
+pub enum PartitionTransform {
     /// Always produces `null`
     Void,
     /// Source value, unmodified
@@ -27,7 +35,122 @@ pub enum Transform {
     Truncate(u32),
 }
 
-impl<'de> Deserialize<'de> for Transform {
+impl PartitionTransform {
+    fn get_result_type_date(field_type: SchemaType) -> IcebergResult<SchemaType> {
+        match field_type {
+            SchemaType::Primitive(PrimitiveType::Date)
+            | SchemaType::Primitive(PrimitiveType::Timestamp)
+            | SchemaType::Primitive(PrimitiveType::Timestamptz) => {
+                Ok(SchemaType::Primitive(PrimitiveType::Int))
+            },
+            _ => {
+                Err(IcebergError::PartitionError {
+                    message: format!(
+                        "can't apply date transform to field of type {}",
+                        field_type
+                    )
+                })
+            }
+        }
+    }
+
+    fn get_result_type_hour(field_type: SchemaType) -> IcebergResult<SchemaType> {
+        match field_type {
+            SchemaType::Primitive(PrimitiveType::Timestamp)
+            | SchemaType::Primitive(PrimitiveType::Timestamptz) => {
+                Ok(SchemaType::Primitive(PrimitiveType::Int))
+            },
+            _ => {
+                Err(IcebergError::PartitionError {
+                    message: format!(
+                        "can't apply date transform to field of type {}",
+                        field_type
+                    )
+                })
+            }
+        }
+    }
+
+    fn get_result_type_bucket(field_type: SchemaType) -> IcebergResult<SchemaType> {
+        match field_type {
+            SchemaType::Primitive(PrimitiveType::Int)
+            | SchemaType::Primitive(PrimitiveType::Long)
+            | SchemaType::Primitive(PrimitiveType::Decimal{..})
+            | SchemaType::Primitive(PrimitiveType::Date)
+            | SchemaType::Primitive(PrimitiveType::Time)
+            | SchemaType::Primitive(PrimitiveType::Timestamp)
+            | SchemaType::Primitive(PrimitiveType::Timestamptz)
+            | SchemaType::Primitive(PrimitiveType::String)
+            | SchemaType::Primitive(PrimitiveType::Uuid)
+            | SchemaType::Primitive(PrimitiveType::Fixed(_))
+            | SchemaType::Primitive(PrimitiveType::Binary) => {
+                Ok(SchemaType::Primitive(PrimitiveType::Int))
+            },
+            _ => {
+                Err(IcebergError::PartitionError {
+                    message: format!(
+                        "can't apply bucket transform to field of type {}",
+                        field_type
+                    )
+                })
+            }
+        }
+    }
+
+    fn get_result_type_truncate(field_type: SchemaType) -> IcebergResult<SchemaType> {
+        match field_type {
+            SchemaType::Primitive(PrimitiveType::Int)
+            | SchemaType::Primitive(PrimitiveType::Long)
+            | SchemaType::Primitive(PrimitiveType::Decimal{..})
+            | SchemaType::Primitive(PrimitiveType::String) => {
+                Ok(field_type)
+            },
+            _ => {
+                Err(IcebergError::PartitionError {
+                    message: format!(
+                        "can't apply truncate transform to field of type {}",
+                        field_type
+                    )
+                })
+            }
+        }
+    }
+
+    /// Returns the field type resulting from applying this transform to the input
+    /// type.
+    ///
+    /// # Errors
+    ///
+    /// This function will return [`IcebergError::PartitionError`] if this transform
+    /// cannot be applied to the input type. For example, a `Year` transform can only
+    /// be applied to date or timestamp types.
+    pub fn get_result_type(&self, field_type: SchemaType) -> IcebergResult<SchemaType> {
+        match self {
+            PartitionTransform::Void => {
+                Ok(field_type)
+            },
+            PartitionTransform::Identity => {
+                Ok(field_type)
+            },
+            PartitionTransform::Year
+            | PartitionTransform::Month
+            | PartitionTransform::Day => {
+                PartitionTransform::get_result_type_date(field_type)
+            },
+            PartitionTransform::Hour => {
+                PartitionTransform::get_result_type_hour(field_type)
+            },
+            PartitionTransform::Bucket(_) => {
+                PartitionTransform::get_result_type_bucket(field_type)
+            },
+            PartitionTransform::Truncate(_) => {
+                PartitionTransform::get_result_type_truncate(field_type)
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PartitionTransform {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -38,26 +161,26 @@ impl<'de> Deserialize<'de> for Transform {
         } else if s.starts_with("truncate") {
             deserialize_truncate(s.into_deserializer())
         } else {
-            Transform::deserialize(s.into_deserializer())
+            PartitionTransform::deserialize(s.into_deserializer())
         }
     }
 }
 
-impl Serialize for Transform {
+impl Serialize for PartitionTransform {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        use Transform::*;
+        use PartitionTransform::*;
         match self {
             Bucket(mod_n) => serializer.serialize_str(&format!("bucket[{mod_n}]")),
             Truncate(width) => serializer.serialize_str(&format!("truncate[{width}]")),
-            _ => Transform::serialize(self, serializer),
+            _ => PartitionTransform::serialize(self, serializer),
         }
     }
 }
 
-fn deserialize_bucket<'de, D>(deserializer: D) -> Result<Transform, D::Error>
+fn deserialize_bucket<'de, D>(deserializer: D) -> Result<PartitionTransform, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -76,10 +199,10 @@ where
                 .parse()
                 .map_err(|_| de::Error::custom("bucket not u32"))
         })?;
-    Ok(Transform::Bucket(bucket))
+    Ok(PartitionTransform::Bucket(bucket))
 }
 
-fn deserialize_truncate<'de, D>(deserializer: D) -> Result<Transform, D::Error>
+fn deserialize_truncate<'de, D>(deserializer: D) -> Result<PartitionTransform, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -98,35 +221,349 @@ where
                 .parse()
                 .map_err(|_| de::Error::custom("bucket not u32"))
         })?;
-    Ok(Transform::Truncate(width))
+    Ok(PartitionTransform::Truncate(width))
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 #[serde(rename_all = "kebab-case")]
-/// Tables are configured with a partition spec that defines how to produce a tuple of partition values from a record.
+/// Specification of a single partition field within a `PartitionSpec`.
 pub struct PartitionField {
-    /// A source column id from the table’s schema
+    /// A source column id from the table’s schema.
     pub source_id: i32,
-    /// A partition field id that is used to identify a partition field and is unique within a partition spec.
-    /// In v2 table metadata, it is unique across all partition specs.
+    /// A partition field id that is used to identify a partition field and is unique
+    /// within a partition spec.
     pub field_id: i32,
     /// A partition name.
     pub name: String,
     /// A transform that is applied to the source column to produce a partition value.
-    pub transform: Transform,
+    pub transform: PartitionTransform,
+}
+
+impl PartitionField {
+    pub fn new(
+        source_id: i32,
+        field_id: i32,
+        name: &str,
+        transform: PartitionTransform
+    ) -> Self {
+        Self {
+            source_id: source_id,
+            field_id: field_id,
+            name: name.to_string(),
+            transform: transform
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 #[serde(rename_all = "kebab-case")]
-/// A definition of how partition values are derived from data fields.
+/// Specification of table-level partitioning.
+///
+/// This struct defines how partition values are derived from the data fields of the
+/// table.
 pub struct PartitionSpec {
-    /// Identifier for the specification
+    /// Unique identifier for this partition spec within an Iceberg table.
     pub spec_id: i32,
-    /// Fields for the specification
+    /// The partitioning fields.
     pub fields: Vec<PartitionField>,
 }
 
+pub const UNPARTITIONED_LAST_ASSIGNED_FIELD_ID: i32 = 999;
+
 impl PartitionSpec {
-    /// Create a new, empty partition spec.
-    pub fn new() -> Self { Self { spec_id: 0, fields: Vec::new() } }
+    /// Creates a new partition spec.
+    ///
+    /// # Errors
+    ///
+    /// [`IcebergError::PartitionError`] is returned if multiple fields have the
+    /// same `field_id`.
+    pub fn try_new(spec_id: i32, fields: Vec<PartitionField>) -> IcebergResult<Self> {
+        let mut uniq_id: HashSet<i32> = HashSet::new();
+        let mut uniq_name: HashSet<String> = HashSet::new();
+
+        // Check correctness of all partition fields.
+        fields.iter().map(|field| -> IcebergResult<()> {
+            if !uniq_id.insert(field.field_id) {
+                return Err(IcebergError::PartitionError {
+                    message: "partition spec contains duplicate field ids".to_string()
+                });
+            }
+
+            if field.name.is_empty() {
+                return Err(IcebergError::PartitionError {
+                    message: "partition field has empty name".to_string()
+                });
+            }
+
+            if !uniq_name.insert(field.name.clone()) {
+                return Err(IcebergError::PartitionError {
+                    message: "partition spec contains duplicate field names".to_string()
+                });
+            }
+
+            Ok(())
+        }).collect::<IcebergResult<_>>()?;
+
+        Ok(Self { spec_id, fields })
+    }
+
+    /// Creates an empty PartitionSpec for unpartitioned tables.
+    pub fn unpartitioned() -> Self {
+        PartitionSpec {
+            spec_id: 0,
+            fields: Vec::new()
+        }
+    }
+
+    /// Obtains the highest assigned field_id of the fields in the partition.
+    ///
+    /// If this `PartitionSpec` has no fields (unpartitioned), then the constant
+    /// [`UNPARTITIONED_LAST_ASSIGNED_FIELD_ID`] is returned.
+    /// `None` if this partition spec contains no fields.
+    pub fn last_assigned_field_id(&self) -> i32 {
+        self.fields.iter().map(|field| field.field_id).max()
+            .unwrap_or(UNPARTITIONED_LAST_ASSIGNED_FIELD_ID)
+    }
+
+    fn find_source_field<'a>(
+        &self,
+        schema: &'a Schema,
+        source_id: i32
+    ) -> Option<&'a StructField> {
+        // Temporary queue of fields to be processed.
+        let mut queue: Vec<&StructField> = schema.fields().iter().collect();
+        let mut result: Option<&StructField> = None;
+
+        // Process recursively.
+        while let Some(field) = queue.pop() {
+            match &field.r#type {
+                SchemaType::Primitive(_) => {
+                    if field.id == source_id {
+                        result = Some(field);
+                        break;
+                    }
+                },
+                SchemaType::Struct(struct_type) => {
+                    // Queue the nested fields.
+                    queue.extend(struct_type.fields.iter());
+                },
+                // Fields nested in lists and maps are not allowed.
+                SchemaType::List(_) | SchemaType::Map(_) => {}
+            };
+        }
+
+        result
+    }
+
+    // fn source_fields<'a>(
+    //     &self,
+    //     schema: &'a Schema
+    // ) -> IcebergResult<Vec<&'a StructField>> {
+    //     self.fields.iter()
+    //         .map(|field| {
+    //             self.find_source_field(schema, field.source_id)
+    //                 .ok_or(IcebergError::PartitionError {
+    //                     message: format!(
+    //                         "source field id {} not found in schema",
+    //                         field.source_id
+    //                     )
+    //                 })
+    //         }).collect::<IcebergResult<Vec<_>>>()
+    // }
+
+    /// Ensures that the partition spec is valid for the given schema.
+    ///
+    /// Tests that all source fields in the spec are present in the schema as primitive
+    /// fields either at the top level or nested inside struct fields. Fields nested
+    /// inside maps or lists are not allowed.
+    ///
+    /// # Errors
+    ///
+    /// [`IcebergError::PartitionError`] is returned if one of the partition
+    /// spec's source fields does not exist within the schema as a primitive field.
+    pub fn ensure_validity_for_schema(&self, schema: &Schema) -> IcebergResult<()> {
+        // Temporary queue of fields to be processed.
+        let mut queue: Vec<&StructField> = schema.fields().iter().collect();
+        // List of valid field ids.
+        let mut field_ids: Vec<i32> = Vec::new();
+
+        // Process recursively.
+        while let Some(field) = queue.pop() {
+            match &field.r#type {
+                SchemaType::Primitive(_) => {
+                    field_ids.push(field.id);
+                },
+                SchemaType::Struct(struct_type) => {
+                    // Queue the nested fields.
+                    queue.extend(struct_type.fields.iter());
+                },
+                // Fields nested in lists and maps are not allowed.
+                SchemaType::List(_) | SchemaType::Map(_) => {}
+            };
+        }
+
+        // TODO: Ensure validity of partition names. See
+        // checkAndAddPartitionName() in the Iceberg Java implementation.
+        //
+        // TODO: Test that source field types match the transform
+
+        for field in &self.fields {
+            if !field_ids.contains(&field.source_id) {
+                return Err(IcebergError::PartitionError {
+                    message: format!(
+                        "source field id {} not found in schema",
+                        field.source_id
+                    )
+                })
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns the partition fields of this spec as a `StructType` with transformations
+    /// applied to the source fields in `schema`.
+    ///
+    /// Each PartitionField is converted to a StructField with its name preserved,
+    /// its `field_id` becoming the struct field's id and its type converted according
+    /// to its transform.
+    pub fn as_struct_type(&self, schema: &Schema) -> IcebergResult<StructType> {
+        let struct_fields = self.fields
+            .iter()
+            .map(|field| -> IcebergResult<StructField> {
+                let source_field = self.find_source_field(schema, field.field_id)
+                    .ok_or_else(|| IcebergError::PartitionError {
+                        message: format!(
+                            "source field id {} not found in schema",
+                            field.source_id
+                        )
+                    })?;
+
+                let result_type = field.transform.get_result_type(
+                    source_field.r#type.clone()
+                )?;
+
+                Ok(StructField::new(
+                    field.field_id,
+                    &field.name,
+                    false,
+                    result_type
+                ))
+            })
+            .collect::<IcebergResult<Vec<_>>>()?;
+
+        Ok(StructType::new(struct_fields))
+    }
+
+    // fn avro_type(
+    //     &self,
+    //     field: &PartitionField,
+    //     source_field: &StructField
+    // ) -> IcebergResult<(String, Option<String>)> {
+    //     // TODO: Handle non-identity transforms
+    //     match source_field.r#type {
+    //         SchemaType::Primitive(p) => {
+    //             match p {
+    //                 PrimitiveType::Boolean => {
+    //                     ("boolean".to_string(), None)
+    //                 },
+    //                 PrimitiveType::Int => {
+    //                     ("int".to_string(), None)
+    //                 },
+    //                 PrimitiveType::Long => {
+    //                     ("long".to_string(), None)
+    //                 },
+    //                 PrimitiveType::Float => {
+    //                     ("float".to_string(), None)
+    //                 },
+    //                 PrimitiveType::Double => {
+    //                     ("double".to_string(), None)
+    //                 },
+    //             }
+    //         }
+    //     }
+    // }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{IcebergError};
+    use crate::schema::{Schema, SchemaField, SchemaType, PrimitiveType};
+    use crate::partition::{PartitionSpec, PartitionField, PartitionTransform};
+
+    fn create_partition_spec() -> PartitionSpec {
+        PartitionSpec::try_new(0, vec![
+            PartitionField::new(
+                1, 1001, "year", PartitionTransform::Year
+            ),
+            PartitionField::new(
+                1, 1002, "month", PartitionTransform::Month
+            ),
+            PartitionField::new(
+                1, 1003, "day", PartitionTransform::Day
+            )
+        ]).unwrap()
+    }
+
+    #[test]
+    fn valid_partition_spec() {
+        let spec = create_partition_spec();
+
+        assert_eq!(spec.spec_id, 0);
+        assert_eq!(spec.fields.len(), 3);
+    }
+
+    #[test]
+    fn invalid_partition_spec() {
+        let result = PartitionSpec::try_new(0, vec![
+            PartitionField::new(
+                1, 1001, "year", PartitionTransform::Year
+            ),
+            PartitionField::new(
+                1, 1002, "month", PartitionTransform::Month
+            ),
+            // Same field_id
+            PartitionField::new(
+                1, 1002, "day", PartitionTransform::Day
+            )
+        ]);
+
+        assert!(matches!(result, Err(IcebergError::PartitionError{..})));
+    }
+
+    #[test]
+    fn valid_partition_spec_for_schema() {
+        let schema = Schema::new(0, vec![
+            SchemaField::new(
+                0,
+                "id",
+                true,
+                SchemaType::Primitive(PrimitiveType::Long)
+            ),
+            SchemaField::new(
+                1,
+                "ts",
+                false,
+                SchemaType::Primitive(PrimitiveType::Timestamp)
+            )
+        ]);
+
+        create_partition_spec().ensure_validity_for_schema(&schema).unwrap();
+    }
+
+    #[test]
+    fn invalid_partition_spec_for_schema() {
+        // Schema is missing the source field with id '1'
+        let schema = Schema::new(0, vec![
+            SchemaField::new(
+                0,
+                "id",
+                true,
+                SchemaType::Primitive(PrimitiveType::Long)
+            )
+        ]);
+
+        let result = create_partition_spec().ensure_validity_for_schema(&schema);
+        assert!(matches!(result, Err(IcebergError::PartitionError{..})));
+    }
 }

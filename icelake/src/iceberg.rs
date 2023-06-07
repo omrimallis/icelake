@@ -64,8 +64,10 @@ pub struct IcebergTableMetadata {
     pub partition_specs: Vec<PartitionSpec>,
     /// ID of the “current” spec that writers should use by default.
     pub default_spec_id: i32,
-    /// An integer; the highest assigned partition field ID across all partition specs
-    /// for the table. This is used to ensure partition fields are always assigned an
+    /// the highest assigned partition field ID across all partition specs
+    /// for the table.
+    ///
+    /// This is used to ensure partition fields are always assigned an
     /// unused ID when evolving specs.
     pub last_partition_id: i32,
     /// A string to string map of table properties. This is used to control settings
@@ -110,10 +112,9 @@ impl IcebergTableMetadata {
     pub fn try_new(
         location: String,
         schemas: Vec<Schema>,
-        current_schema_id: i32
+        current_schema_id: i32,
+        partition_spec: Option<PartitionSpec>
     ) -> IcebergResult<Self> {
-        let partition_spec = PartitionSpec::new();
-        let partition_spec_id = partition_spec.spec_id;
         let sort_order = SortOrder::new();
         let sort_order_id = sort_order.order_id;
 
@@ -121,6 +122,12 @@ impl IcebergTableMetadata {
         let current_schema =
             schemas.iter().find(|&schema| schema.id() == current_schema_id)
             .ok_or(IcebergError::SchemaNotFound { schema_id: current_schema_id })?;
+
+        let partition_spec = partition_spec.unwrap_or(PartitionSpec::unpartitioned());
+        let partition_spec_id = partition_spec.spec_id;
+        let last_partition_id = partition_spec.last_assigned_field_id();
+        // Ensure all partition field IDs are present in the schema.
+        partition_spec.ensure_validity_for_schema(&current_schema)?;
 
         // Infer the maximum field id of the current schema.
         let last_column_id = current_schema.max_field_id() + 1;
@@ -136,7 +143,7 @@ impl IcebergTableMetadata {
             current_schema_id: current_schema_id,
             partition_specs: vec![partition_spec],
             default_spec_id: partition_spec_id,
-            last_partition_id: 1000,
+            last_partition_id: last_partition_id,
             properties: Some(HashMap::new()),
             current_snapshot_id: Some(-1),
             snapshots: Some(Vec::new()),
@@ -164,6 +171,11 @@ impl IcebergTableMetadata {
                 })
             })
         })
+    }
+
+    pub fn current_partition_spec(&self) -> &PartitionSpec {
+        self.partition_specs.iter().find(|spec| spec.spec_id == self.default_spec_id)
+            .expect("default_spec_id does not match any partition spec")
     }
 }
 
@@ -273,6 +285,12 @@ impl IcebergTable {
             .ok_or(IcebergError::TableNotInitialized)
     }
 
+    pub fn current_partition_spec(&self) -> IcebergResult<&PartitionSpec> {
+        Ok(self
+            .current_metadata()?
+            .current_partition_spec())
+    }
+
     /// Reads the manifest list for the given snapshot.
     pub async fn read_manifest_list(
         &self,
@@ -352,7 +370,8 @@ impl IcebergTable {
             let metadata = IcebergTableMetadata::try_new(
                 self.storage.location().to_string(),
                 vec![schema],
-                current_schema_id
+                current_schema_id,
+                None
             )?;
 
             self.commit(metadata).await
@@ -669,7 +688,8 @@ mod tests {
         let metadata = IcebergTableMetadata::try_new(
             "s3://bucket/path/to/table".to_string(),
             vec![schema0, schema1],
-            1
+            1,
+            None
         ).unwrap();
 
         assert_eq!(metadata.current_schema().id(), 1);
@@ -684,7 +704,8 @@ mod tests {
             IcebergTableMetadata::try_new(
                 "s3://bucket/path/to/table".to_string(),
                 vec![schema],
-                1
+                1,
+                None
             ),
             Err(IcebergError::SchemaNotFound {..})
         ));

@@ -3,229 +3,20 @@ use std::fmt;
 use std::collections::HashMap;
 
 use bytes::Bytes;
-use apache_avro;
 use serde::{
     Serialize, Serializer, ser::SerializeSeq,
     Deserialize, Deserializer
 };
 use serde_repr::{Serialize_repr, Deserialize_repr};
+use serde_json::{
+    json,
+    value::Value as JsonValue
+};
+use apache_avro;
 
 use crate::{IcebergResult, IcebergError, IcebergTableVersion};
-use crate::schema::Schema;
+use crate::schema::{Schema, SchemaType, StructField, PrimitiveType, StructType};
 use crate::partition::PartitionSpec;
-
-/// Avro schema for the manifest_entry struct
-static MANIFEST_ENTRY_SCHEMA: &str = r#"
-{
-  "type": "record",
-  "name": "manifest_entry",
-  "fields": [
-    { "name": "status", "type": "int", "field-id": 0 },
-    {
-      "name": "snapshot_id",
-      "type": [ "null", "long" ],
-      "default": null,
-      "field-id": 1
-    },
-    {
-      "name": "sequence_number",
-      "type": [ "null", "long" ],
-      "default": null,
-      "field-id": 3
-    },
-    {
-      "name": "file_sequence_number",
-      "type": [ "null", "long" ],
-      "default": null,
-      "field-id": 4
-    },
-    {
-      "name": "data_file",
-      "type": {
-        "type": "record",
-        "name": "r2",
-        "fields": [
-          { "name": "content", "type": "int", "field-id": 134 },
-          { "name": "file_path", "type": "string", "field-id": 100 },
-          { "name": "file_format", "type": "string", "field-id": 101 },
-          {
-            "name": "partition",
-            "type": { "type": "record", "name": "r102", "fields": [] },
-            "field-id": 102
-          },
-          { "name": "record_count", "type": "long", "field-id": 103 },
-          { "name": "file_size_in_bytes", "type": "long", "field-id": 104 },
-          {
-            "name": "column_sizes",
-            "type": [
-              "null",
-              {
-                "type": "array",
-                "items": {
-                  "type": "record",
-                  "name": "k117_v118",
-                  "fields": [
-                    { "name": "key", "type": "int", "field-id": 117 },
-                    { "name": "value", "type": "long", "field-id": 118 }
-                  ]
-                },
-                "logicalType": "map"
-              }
-            ],
-            "default": null,
-            "field-id": 108
-          },
-          {
-            "name": "value_counts",
-            "type": [
-              "null",
-              {
-                "type": "array",
-                "items": {
-                  "type": "record",
-                  "name": "k119_v120",
-                  "fields": [
-                    { "name": "key", "type": "int", "field-id": 119 },
-                    { "name": "value", "type": "long", "field-id": 120 }
-                  ]
-                },
-                "logicalType": "map"
-              }
-            ],
-            "default": null,
-            "field-id": 109
-          },
-          {
-            "name": "null_value_counts",
-            "type": [
-              "null",
-              {
-                "type": "array",
-                "items": {
-                  "type": "record",
-                  "name": "k121_v122",
-                  "fields": [
-                    { "name": "key", "type": "int", "field-id": 121 },
-                    { "name": "value", "type": "long", "field-id": 122 }
-                  ]
-                },
-                "logicalType": "map"
-              }
-            ],
-            "default": null,
-            "field-id": 110
-          },
-          {
-            "name": "nan_value_counts",
-            "type": [
-              "null",
-              {
-                "type": "array",
-                "items": {
-                  "type": "record",
-                  "name": "k138_v139",
-                  "fields": [
-                    { "name": "key", "type": "int", "field-id": 138 },
-                    { "name": "value", "type": "long", "field-id": 139 }
-                  ]
-                },
-                "logicalType": "map"
-              }
-            ],
-            "default": null,
-            "field-id": 137
-          },
-          {
-            "name": "distinct_counts",
-            "type": [
-              "null",
-              {
-                "type": "array",
-                "items": {
-                  "type": "record",
-                  "name": "k123_v124",
-                  "fields": [
-                    { "name": "key", "type": "int", "field-id": 123 },
-                    { "name": "value", "type": "long", "field-id": 124 }
-                  ]
-                },
-                "logicalType": "map"
-              }
-            ],
-            "default": null,
-            "field-id": 111
-          },
-          {
-            "name": "lower_bounds",
-            "type": [
-              "null",
-              {
-                "type": "array",
-                "items": {
-                  "type": "record",
-                  "name": "k126_v127",
-                  "fields": [
-                    { "name": "key", "type": "int", "field-id": 126 },
-                    { "name": "value", "type": "bytes", "field-id": 127 }
-                  ]
-                },
-                "logicalType": "map"
-              }
-            ],
-            "default": null,
-            "field-id": 125
-          },
-          {
-            "name": "upper_bounds",
-            "type": [
-              "null",
-              {
-                "type": "array",
-                "items": {
-                  "type": "record",
-                  "name": "k129_v130",
-                  "fields": [
-                    { "name": "key", "type": "int", "field-id": 129 },
-                    { "name": "value", "type": "bytes", "field-id": 130 }
-                  ]
-                },
-                "logicalType": "map"
-              }
-            ],
-            "default": null,
-            "field-id": 128
-          },
-          {
-            "name": "key_metadata",
-            "type": [ "null", "bytes" ],
-            "default": null,
-            "field-id": 131
-          },
-          {
-            "name": "split_offsets",
-            "type": [ "null", { "type": "array", "items": "long", "element-id": 133 } ],
-            "default": null,
-            "field-id": 132
-          },
-          {
-            "name": "equality_ids",
-            "type": [ "null", { "type": "array", "items": "int", "element-id": 136 } ],
-            "default": null,
-            "field-id": 135
-          },
-          {
-            "name": "sort_order_id",
-            "type": [ "null", "int" ],
-            "default": null,
-            "field-id": 140
-          }
-        ]
-      },
-      "field-id": 2
-    }
-  ]
-}
-"#;
 
 /// Avro schema for the manifest_file struct
 static MANIFEST_FILE_SCHEMA: &str = r#"
@@ -285,6 +76,79 @@ static MANIFEST_FILE_SCHEMA: &str = r#"
   ]
 }
 "#;
+
+/// Produces the Avro schema for a partition field as a json value.
+///
+/// See the Avro spec for supported types and logical types.
+/// [https://avro.apache.org/docs/1.11.1/specification/]
+fn partition_field_avro_schema(field: &StructField) -> IcebergResult<JsonValue> {
+    match &field.r#type {
+        SchemaType::Primitive(p) => {
+            Ok(match p {
+                PrimitiveType::Boolean => json!({"type": "boolean"}),
+                PrimitiveType::Int => json!({"type": "int"}),
+                PrimitiveType::Long => json!({"type": "long"}),
+                PrimitiveType::Float => json!({"type": "float"}),
+                PrimitiveType::Double => json!({"type": "double"}),
+                PrimitiveType::Decimal{precision, scale} => {
+                    json!({
+                        "type": "bytes",
+                        "logicalType": "decimal",
+                        "precision": precision,
+                        "scale": scale
+                    })
+                },
+                PrimitiveType::Date => {
+                    json!({
+                        "type": "int",
+                        "logicalType": "date",
+                    })
+                },
+                PrimitiveType::Time => {
+                    json!({
+                        "type": "long",
+                        "logicalType": "time-micros",
+                    })
+                },
+                PrimitiveType::Timestamp => {
+                    json!({
+                        "type": "long",
+                        "logicalType": "timestamp-micros"
+                    })
+                },
+                PrimitiveType::Timestamptz => {
+                    json!({
+                        "type": "long",
+                        "logicalType": "local-timestamp-micros"
+                    })
+                },
+                PrimitiveType::String => json!({"type": "string"}),
+                PrimitiveType::Uuid => {
+                    json!({
+                        "type": "string",
+                        "logicalType": "uuid"
+                    })
+                },
+                PrimitiveType::Fixed(size) => {
+                    json!({
+                        "type": "fixed",
+                        "size": size,
+                        "name": field.name
+                    })
+                },
+                PrimitiveType::Binary => json!({"type": "bytes"})
+            })
+        },
+        _ => {
+            Err(IcebergError::PartitionError {
+                message: format!(
+                    "partition field {} has non-primitive type",
+                    field.name
+                )
+            })
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Partition {
@@ -464,6 +328,264 @@ impl DataFile {
             sort_order_id: None,
         }
     }
+
+    /// Builds the Avro schema for the partition spec, and returns it as a JSON value.
+    ///
+    /// The Avro schema is dynamically determined according to the fields of the
+    /// partition spec and the schema of the table. It is used when encoding the partition
+    /// spec as part of a manifest file.
+    ///
+    /// An example of a resulting Avro schema:
+    /// ```json
+    /// {
+    ///     "name": "partition",
+    ///     "type": {
+    ///         "type": "record",
+    ///         "name": "r102",
+    ///         "fields": [
+    ///             {
+    ///                 "name": "shipdate",
+    ///                 "type": [
+    ///                     "null",
+    ///                     {
+    ///                         "type": "int",
+    ///                         "logicalType": "date"
+    ///                     }
+    ///                 ],
+    ///                 "default": null,
+    ///                 "field-id": 1000
+    ///             }
+    ///         ]
+    ///     },
+    ///     "doc": "Partition data tuple, schema based on the partition spec",
+    ///     "field-id": 102
+    /// }
+    /// ```
+    fn partition_avro_schema(
+        partition_type: StructType
+    ) -> IcebergResult<JsonValue> {
+
+        let fields_schema: Vec<JsonValue> = partition_type.fields
+            .iter()
+            .map(|field| -> IcebergResult<JsonValue> {
+                Ok(serde_json::json!({
+                    "name": field.name,
+                    "type": [
+                        "null",
+                        partition_field_avro_schema(field)?
+                    ],
+                    "default": "null",
+                    "field-id": field.id,
+                }))
+            })
+            .collect::<IcebergResult<Vec<JsonValue>>>()?;
+
+        Ok(serde_json::json!({
+            "name": "partition",
+            "type": {
+                "type": "record",
+                "name": "r102",
+                "fields": fields_schema
+            },
+            "doc": "Partition data tuple, schema based on the partition spec",
+            "field-id": 102
+        }))
+    }
+
+    /// Builds the Avro schema for the DataFile, and returns it as a JSON value.
+    ///
+    /// The Avro schema is dynamically determined according to the fields of the
+    /// partition spec and the schema of the table. It is used when encoding the partition
+    /// spec as part of a manifest file.
+    pub fn avro_schema(
+        schema: &Schema,
+        partition_spec: &PartitionSpec
+    ) -> IcebergResult<JsonValue> {
+        let partition_type = partition_spec.as_struct_type(schema)?;
+
+        let data_file_fields_schema = json!([
+            { "name": "content", "type": "int", "field-id": 134},
+            { "name": "file_path", "type": "string", "field-id": 100 },
+            { "name": "file_format", "type": "string", "field-id": 101 },
+            Self::partition_avro_schema(partition_type)?,
+            { "name": "record_count", "type": "long", "field-id": 103 },
+            { "name": "file_size_in_bytes", "type": "long", "field-id": 104 },
+            {
+                "name": "column_sizes",
+                "type": [
+                    "null",
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "record",
+                            "name": "k117_v118",
+                            "fields": [
+                            { "name": "key", "type": "int", "field-id": 117 },
+                            { "name": "value", "type": "long", "field-id": 118 }
+                            ]
+                        },
+                        "logicalType": "map"
+                    }
+                ],
+                "default": null,
+                "field-id": 108
+            },
+            {
+                "name": "value_counts",
+                "type": [
+                    "null",
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "record",
+                            "name": "k119_v120",
+                            "fields": [
+                            { "name": "key", "type": "int", "field-id": 119 },
+                            { "name": "value", "type": "long", "field-id": 120 }
+                            ]
+                        },
+                        "logicalType": "map"
+                    }
+                ],
+                "default": null,
+                "field-id": 109
+            },
+            {
+                "name": "null_value_counts",
+                "type": [
+                    "null",
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "record",
+                            "name": "k121_v122",
+                            "fields": [
+                            { "name": "key", "type": "int", "field-id": 121 },
+                            { "name": "value", "type": "long", "field-id": 122 }
+                            ]
+                        },
+                        "logicalType": "map"
+                    }
+                ],
+                "default": null,
+                "field-id": 110
+            },
+            {
+                "name": "nan_value_counts",
+                "type": [
+                    "null",
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "record",
+                            "name": "k138_v139",
+                            "fields": [
+                            { "name": "key", "type": "int", "field-id": 138 },
+                            { "name": "value", "type": "long", "field-id": 139 }
+                            ]
+                        },
+                        "logicalType": "map"
+                    }
+                ],
+                "default": null,
+                "field-id": 137
+            },
+            {
+                "name": "distinct_counts",
+                "type": [
+                    "null",
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "record",
+                            "name": "k123_v124",
+                            "fields": [
+                            { "name": "key", "type": "int", "field-id": 123 },
+                            { "name": "value", "type": "long", "field-id": 124 }
+                            ]
+                        },
+                        "logicalType": "map"
+                    }
+                ],
+                "default": null,
+                "field-id": 111
+            },
+            {
+                "name": "lower_bounds",
+                "type": [
+                    "null",
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "record",
+                            "name": "k126_v127",
+                            "fields": [
+                            { "name": "key", "type": "int", "field-id": 126 },
+                            { "name": "value", "type": "bytes", "field-id": 127 }
+                            ]
+                        },
+                        "logicalType": "map"
+                    }
+                ],
+                "default": null,
+                "field-id": 125
+            },
+            {
+                "name": "upper_bounds",
+                "type": [
+                    "null",
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "record",
+                            "name": "k129_v130",
+                            "fields": [
+                            { "name": "key", "type": "int", "field-id": 129 },
+                            { "name": "value", "type": "bytes", "field-id": 130 }
+                            ]
+                        },
+                        "logicalType": "map"
+                    }
+                ],
+                "default": null,
+                "field-id": 128
+            },
+            {
+                "name": "key_metadata",
+                "type": [ "null", "bytes" ],
+                "default": null,
+                "field-id": 131
+            },
+            {
+                "name": "split_offsets",
+                "type": [ "null", { "type": "array", "items": "long", "element-id": 133 } ],
+                "default": null,
+                "field-id": 132
+            },
+            {
+                "name": "equality_ids",
+                "type": [ "null", { "type": "array", "items": "int", "element-id": 136 } ],
+                "default": null,
+                "field-id": 135
+            },
+            {
+                "name": "sort_order_id",
+                "type": [ "null", "int" ],
+                "default": null,
+                "field-id": 140
+            }
+        ]);
+
+        Ok(json!({
+            "name": "data_file",
+            "type": {
+                "type": "record",
+                "name": "r2",
+                "fields": data_file_fields_schema,
+            },
+            "field-id": 2
+        }))
+    }
 }
 
 #[derive(Debug, Serialize_repr, Deserialize_repr, PartialEq, Eq, Clone)]
@@ -505,6 +627,40 @@ impl ManifestEntry {
             data_file: data_file
         }
     }
+
+    pub fn avro_schema(
+        schema: &Schema,
+        partition_spec: &PartitionSpec
+    ) -> IcebergResult<apache_avro::schema::Schema> {
+        let schema = json!({
+            "type": "record",
+            "name": "manifest_entry",
+            "fields": [
+                { "name": "status", "type": "int", "field-id": 0 },
+                {
+                    "name": "snapshot_id",
+                    "type": [ "null", "long" ],
+                    "default": null,
+                    "field-id": 1
+                },
+                {
+                    "name": "sequence_number",
+                    "type": [ "null", "long" ],
+                    "default": null,
+                    "field-id": 3
+                },
+                {
+                    "name": "file_sequence_number",
+                    "type": [ "null", "long" ],
+                    "default": null,
+                    "field-id": 4
+                },
+                DataFile::avro_schema(schema, partition_spec)?
+            ]
+        });
+
+        Ok(apache_avro::schema::Schema::parse(&schema)?)
+    }
 }
 
 pub enum ManifestContentType {
@@ -528,8 +684,8 @@ impl fmt::Display for ManifestContentType {
 /// predicates on partition values that are used during job planning to select files
 /// from a manifest.
 pub struct Manifest {
-    /// JSON representation of the table schema at the time the manifest was written.
-    schema: String,
+    /// The table schema at the time the manifest was written.
+    schema: Schema,
     /// ID of the schema used to write the manifest.
     schema_id: i32,
     /// Partition spec of the data files within this manifest.
@@ -543,19 +699,20 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    pub fn try_new(
-        schema: &Schema,
+    pub fn new(
+        schema: Schema,
         partition_spec: PartitionSpec,
         content: ManifestContentType
-    ) -> IcebergResult<Self> {
-        Ok(Self {
-            schema: schema.encode()?,
-            schema_id: schema.id(),
+    ) -> Self {
+        let schema_id = schema.id();
+        Self {
+            schema: schema,
+            schema_id: schema_id,
             partition_spec: partition_spec,
             format_version: IcebergTableVersion::V2,
             content: content,
             entries: Vec::new(),
-        })
+        }
     }
 
     pub fn add_manifest_entry(&mut self, manifest: ManifestEntry) {
@@ -696,16 +853,29 @@ impl ManifestWriter {
         Self { sequence_number, snapshot_id }
     }
 
+    /// Constructs the Avro schema for the ManifestEntry struct.
+    ///
+    /// The schema is dynamically constructed since it changes according to the partition
+    /// spec of the manifest.
+    fn manifest_entry_schema(
+        manifest: &Manifest
+    ) -> IcebergResult<apache_avro::schema::Schema> {
+        ManifestEntry::avro_schema(
+            &manifest.schema,
+            &manifest.partition_spec
+        )
+    }
+
     /// Serializes the manifest into an Avro manifest file.
     /// Consumes the Manifest object.
     fn encode(&self, manifest: Manifest) -> IcebergResult<Bytes> {
-        let avro_schema = apache_avro::Schema::parse_str(MANIFEST_ENTRY_SCHEMA)?;
+        let avro_schema = Self::manifest_entry_schema(&manifest)?;
         let mut writer = apache_avro::Writer::new(&avro_schema, Vec::<u8>::new());
 
         // The Avro file's key-value metadata contains the schema of the table
         // and the partition spec for the files in the manifest.
         let mut metadata = HashMap::<String, String>::new();
-        metadata.insert("schema".to_string(), manifest.schema);
+        metadata.insert("schema".to_string(), manifest.schema.encode()?);
         metadata.insert("schema-id".to_string(), manifest.schema_id.to_string());
         metadata.insert(
             "partition-spec".to_string(),
