@@ -85,7 +85,7 @@ impl TableOperation for AppendFilesOperation {
         // Encode the on-disk manifest file.
         let writer = ManifestWriter::new(state.sequence_number, state.snapshot_id);
         let (manifest_content, manifest_file_entry) = writer.write(
-            &file.url(), manifest
+            &file.url(), &manifest
         )?;
 
         file.set_bytes(manifest_content);

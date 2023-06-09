@@ -65,6 +65,7 @@ mod utils;
 
 pub mod iceberg;
 pub mod schema;
+pub mod value;
 pub mod snapshot;
 pub mod partition;
 pub mod sort;
