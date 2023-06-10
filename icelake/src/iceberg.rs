@@ -15,7 +15,7 @@ use murmur3::murmur3_32;
 use crate::{IcebergError, IcebergResult};
 use crate::utils;
 use crate::schema::Schema;
-use crate::partition::PartitionSpec;
+use crate::partition::{PartitionSpecModel, PartitionSpec, PartitionField};
 use crate::sort::SortOrder;
 use crate::transaction::Transaction;
 use crate::storage::{IcebergStorage, IcebergPath};
@@ -61,7 +61,7 @@ pub struct IcebergTableMetadata {
     /// ID of the table’s current schema.
     pub current_schema_id: i32,
     /// A list of partition specs, stored as full partition spec objects.
-    pub partition_specs: Vec<PartitionSpec>,
+    partition_specs: Vec<PartitionSpecModel>,
     /// ID of the “current” spec that writers should use by default.
     pub default_spec_id: i32,
     /// the highest assigned partition field ID across all partition specs
@@ -113,7 +113,7 @@ impl IcebergTableMetadata {
         location: String,
         schemas: Vec<Schema>,
         current_schema_id: i32,
-        partition_spec: Option<PartitionSpec>
+        partition_fields: Option<Vec<PartitionField>>
     ) -> IcebergResult<Self> {
         let sort_order = SortOrder::new();
         let sort_order_id = sort_order.order_id;
@@ -123,11 +123,20 @@ impl IcebergTableMetadata {
             schemas.iter().find(|&schema| schema.id() == current_schema_id)
             .ok_or(IcebergError::SchemaNotFound { schema_id: current_schema_id })?;
 
-        let partition_spec = partition_spec.unwrap_or(PartitionSpec::unpartitioned());
-        let partition_spec_id = partition_spec.spec_id;
+        let partition_spec = match partition_fields {
+            Some(partition_fields) => {
+                PartitionSpec::try_new(
+                    0,
+                    partition_fields,
+                    current_schema.clone()
+                )?
+            },
+            None => {
+                PartitionSpec::unpartitioned()
+            }
+        };
+        let partition_spec_id = partition_spec.spec_id();
         let last_partition_id = partition_spec.last_assigned_field_id();
-        // Ensure all partition field IDs are present in the schema.
-        partition_spec.ensure_validity_for_schema(&current_schema)?;
 
         // Infer the maximum field id of the current schema.
         let last_column_id = current_schema.max_field_id() + 1;
@@ -141,7 +150,7 @@ impl IcebergTableMetadata {
             last_column_id: last_column_id,
             schemas: schemas,
             current_schema_id: current_schema_id,
-            partition_specs: vec![partition_spec],
+            partition_specs: vec![partition_spec.model()],
             default_spec_id: partition_spec_id,
             last_partition_id: last_partition_id,
             properties: Some(HashMap::new()),
@@ -155,14 +164,16 @@ impl IcebergTableMetadata {
         })
     }
 
+    // TODO: This function will panic if the metadata object is invalid, which
+    // can happen if it was deserialized directly.
     pub fn current_schema(&self) -> &Schema {
         // Panic if not found, as we are validating this in the constructor.
         self.schemas.iter().find(|&schema| schema.id() == self.current_schema_id)
             .expect("current_schema_id does not match any schema")
     }
 
-    /// Return the latest snapshot of the table. May return None if the table has no
-    /// snapshots, or if its current_snapshot_id is invalid.
+    /// Return the latest snapshot of the table. May return `None` if the table has no
+    /// snapshots, or if its `current_snapshot_id` is invalid.
     pub fn current_snapshot(&self) -> Option<&Snapshot> {
         self.snapshots.as_ref().and_then(|snapshots| {
             self.current_snapshot_id.and_then(|current_snapshot_id| {
@@ -173,9 +184,18 @@ impl IcebergTableMetadata {
         })
     }
 
-    pub fn current_partition_spec(&self) -> &PartitionSpec {
-        self.partition_specs.iter().find(|spec| spec.spec_id == self.default_spec_id)
-            .expect("default_spec_id does not match any partition spec")
+    // TODO: This function will panic if the metadata object is invalid, which
+    // can happen if it was deserialized directly.
+    pub fn current_partition_spec(&self) -> PartitionSpec {
+        let model = self.partition_specs.iter().find(
+            |spec| spec.spec_id == self.default_spec_id
+        ).expect("default_spec_id does not match any partition spec");
+
+        PartitionSpec::try_new(
+            model.spec_id,
+            model.fields.clone(),
+            self.current_schema().clone()
+        ).unwrap()
     }
 }
 
@@ -198,10 +218,11 @@ impl MetadataLog {
     }
 }
 
+/// Holds the current state of the Iceberg table, changing with each commit.
 pub struct IcebergTableState {
-    // UUID identifying the latest snapshot of the table.
+    /// UUID identifying the latest snapshot of the table.
     pub version_uuid: Uuid,
-    // Path to the current metadata file on the object store.
+    /// Path to the current metadata file on the object store.
     pub metadata_path: IcebergPath,
 }
 
@@ -285,7 +306,7 @@ impl IcebergTable {
             .ok_or(IcebergError::TableNotInitialized)
     }
 
-    pub fn current_partition_spec(&self) -> IcebergResult<&PartitionSpec> {
+    pub fn current_partition_spec(&self) -> IcebergResult<PartitionSpec> {
         Ok(self
             .current_metadata()?
             .current_partition_spec())
@@ -318,7 +339,7 @@ impl IcebergTable {
                    .push(MetadataLog::new(
                        &self.storage.to_uri(&state.metadata_path),
                        current_metadata.last_updated_ms
-               ));
+                   ));
            }
        }
 

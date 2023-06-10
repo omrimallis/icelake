@@ -55,7 +55,7 @@ impl RecordBatchWriter {
     ) -> IcebergResult<()> {
         let mut transaction = table.new_transaction();
         let mut operation = AppendFilesOperation::new();
-        operation.append_file(DataFile::new(
+        operation.append_file(DataFile::builder(
             DataFileContent::Data,
             &file.url(),
             DataFileFormat::Parquet,
@@ -69,7 +69,7 @@ impl RecordBatchWriter {
                     message: "Failed to create data file: too large".to_string()
                 }
             })?,
-        ));
+        ).build());
         transaction.set_operation(Box::new(operation));
         transaction.commit().await?;
 

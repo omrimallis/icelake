@@ -68,6 +68,28 @@ pub struct DataFile {
 }
 
 impl DataFile {
+    pub fn builder(
+        content: DataFileContent,
+        file_path: &str,
+        file_format: DataFileFormat,
+        record_count: i64,
+        file_size_in_bytes: i64,
+    ) -> DataFileBuilder {
+        DataFileBuilder::new(
+            content,
+            file_path,
+            file_format,
+            record_count,
+            file_size_in_bytes
+        )
+    }
+}
+
+pub struct DataFileBuilder {
+    data_file: DataFile
+}
+
+impl DataFileBuilder {
     pub fn new(
         content: DataFileContent,
         file_path: &str,
@@ -76,23 +98,34 @@ impl DataFile {
         file_size_in_bytes: i64,
     ) -> Self {
         Self {
-            content: content,
-            file_path: String::from(file_path),
-            file_format: file_format,
-            partition: HashMap::new(),
-            record_count: record_count,
-            file_size_in_bytes: file_size_in_bytes,
-            column_sizes: None,
-            value_counts: None,
-            null_value_counts: None,
-            nan_value_counts: None,
-            distinct_counts: None,
-            lower_bounds: None,
-            upper_bounds: None,
-            key_metadata: None,
-            split_offsets: None,
-            equality_ids: None,
-            sort_order_id: None,
+            data_file: DataFile {
+                content: content,
+                file_path: String::from(file_path),
+                file_format: file_format,
+                partition: HashMap::new(),
+                record_count: record_count,
+                file_size_in_bytes: file_size_in_bytes,
+                column_sizes: None,
+                value_counts: None,
+                null_value_counts: None,
+                nan_value_counts: None,
+                distinct_counts: None,
+                lower_bounds: None,
+                upper_bounds: None,
+                key_metadata: None,
+                split_offsets: None,
+                equality_ids: None,
+                sort_order_id: None,
+            }
         }
+    }
+
+    pub fn with_partition_values(mut self, partitions: HashMap<String, Value>) -> Self {
+        self.data_file.partition = partitions;
+        self
+    }
+
+    pub fn build(self) -> DataFile {
+        self.data_file
     }
 }

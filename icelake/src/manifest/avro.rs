@@ -11,9 +11,7 @@ use apache_avro::{
 use serde_json::{json, value::Value as JsonValue};
 
 use crate::{IcebergResult, IcebergError};
-use crate::schema::{
-    Schema, StructField, SchemaType, PrimitiveType, StructType
-};
+use crate::schema::{StructField, SchemaType, PrimitiveType, StructType};
 use crate::partition::PartitionSpec;
 use super::manifest::{Manifest, ManifestEntry, ManifestEntryStatus};
 use super::datafile::{DataFile, DataFileContent, DataFileFormat};
@@ -25,13 +23,10 @@ struct ManifestEntrySerializer {
 }
 
 impl ManifestEntrySerializer {
-    pub fn try_new(
-        schema: &Schema,
-        partition_spec: &PartitionSpec
-    ) -> IcebergResult<Self> {
+    pub fn try_new(partition_spec: &PartitionSpec) -> IcebergResult<Self> {
         // The Avro schemas are dynamically built based on the Iceberg schema and
         // partition spec.
-        let data_file_schema_json = Self::build_data_file_schema(schema, partition_spec)?;
+        let data_file_schema_json = Self::build_data_file_schema(partition_spec)?;
         let manifest_entry_schema_json = Self::build_manifest_entry_schema(
             &data_file_schema_json
         );
@@ -183,14 +178,13 @@ impl ManifestEntrySerializer {
 
     /// Builds the Avro schema for the DataFile, and returns it as a JSON value.
     ///
-    /// The Avro schema is dynamically determined according to the fields of the
+    /// The Avro schema is dynamically constructed according to the fields of the
     /// partition spec and the schema of the table. It is used when encoding the partition
     /// spec as part of a manifest file.
     fn build_data_file_schema(
-        schema: &Schema,
         partition_spec: &PartitionSpec
     ) -> IcebergResult<JsonValue> {
-        let partition_type = partition_spec.as_struct_type(schema)?;
+        let partition_type = partition_spec.as_struct_type();
 
         let data_file_fields_schema = json!([
             { "name": "content", "type": "int", "field-id": 134},
@@ -560,10 +554,7 @@ impl ManifestEntrySerializer {
 
 /// Serializes the manifest into Avro format.
 pub(super) fn serialize_manifest_to_avro(manifest: &Manifest) -> IcebergResult<Vec<u8>> {
-    let serializer = ManifestEntrySerializer::try_new(
-        manifest.schema(),
-        manifest.partition_spec()
-    )?;
+    let serializer = ManifestEntrySerializer::try_new(manifest.partition_spec())?;
 
     let mut writer = AvroWriter::new(serializer.schema(), Vec::new());
 
@@ -574,12 +565,12 @@ pub(super) fn serialize_manifest_to_avro(manifest: &Manifest) -> IcebergResult<V
     metadata.insert("schema-id".to_string(), manifest.schema_id().to_string());
     metadata.insert(
         "partition-spec".to_string(),
-        serde_json::to_string(&manifest.partition_spec().fields)
+        serde_json::to_string(&manifest.partition_spec().fields())
             .map_err(|e| IcebergError::SerializeJson { source: e })?
     );
     metadata.insert(
         "partition-spec-id".to_string(),
-        manifest.partition_spec().spec_id.to_string()
+        manifest.partition_spec().spec_id().to_string()
     );
     metadata.insert("format-version".to_owned(), manifest.format_version().to_string());
     metadata.insert("content".to_owned(), manifest.content_type().to_string());
