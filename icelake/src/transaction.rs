@@ -42,6 +42,10 @@ impl AppendFilesOperation {
         self.data_files.push(file);
     }
 
+    pub fn append_files(&mut self, files: impl IntoIterator<Item=DataFile>) {
+        self.data_files.extend(files);
+    }
+
     fn create_manifest(
         &self,
         table: &IcebergTable,

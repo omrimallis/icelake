@@ -462,6 +462,11 @@ impl Schema {
         }
     }
 
+    pub fn get_field_by_name(&self, name: &str) -> Option<&SchemaField> {
+        self.fields().iter()
+            .find(|field| field.name == name)
+    }
+
     pub fn encode(&self) -> IcebergResult<String> {
         serde_json::to_string(self).map_err(
             |e| IcebergError::SerializeSchemaJson { source: e }

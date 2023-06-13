@@ -1,4 +1,4 @@
-//! Interface for workign with Iceberg field values.
+// Interface for workign with Iceberg field values.
 //!
 //! This module provides [`Value`] which represents a single value of a field in an
 //! Iceberg table.
@@ -144,9 +144,52 @@ impl Value {
     }
 }
 
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Boolean(x) => write!(f, "{}", x),
+            Value::Int(x) => write!(f, "{}", x),
+            Value::Long(x) => write!(f, "{}", x),
+            Value::Float(x) => write!(f, "{}", x),
+            Value::Double(x) => write!(f, "{}", x),
+            Value::Date(d) => write!(f, "{}", d.format("%Y-%m-%d")),
+            Value::Time(t) => write!(f, "{}", t.format("%H:%M:%S%.6f")),
+            Value::Timestamp(ts) => {
+                write!(f, "{}", ts.format("%Y-%m-%dT%H:%M:%S%.6f"))
+            },
+            Value::String(s) => write!(f, "{}", s),
+            Value::Uuid(u) => write!(f, "{}", u.to_string()),
+            Value::Binary(b) | Value::Fixed(b) => {
+                write!(
+                    f,
+                    "{}",
+                    b.iter().map(|x| format!("{:02x}", x)).collect::<String>()
+                )
+            },
+            _ => {
+                todo!("non-primitive types can't be displayed");
+            }
+        }
+    }
+}
+
 impl TryFrom<Value> for Vec<u8> {
     type Error = IcebergError;
 
+    /// Converts `Value` to its binary representation according to the
+    /// [single-value binary serialization spec](https://iceberg.apache.org/spec/#binary-single-value-serialization).
+    ///
+    /// # Examples
+    /// ```rust
+    /// use icelake::value::Value;
+    ///
+    /// assert_eq!(
+    ///     <Vec<u8> as TryFrom<Value>>::try_from(
+    ///         Value::Int(0x11223344)
+    ///     ).unwrap(),
+    ///     vec![0x44, 0x33, 0x22, 0x11]
+    /// )
+    /// ```
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Boolean(b) => {

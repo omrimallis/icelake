@@ -12,6 +12,7 @@ use serde_json::{json, value::Value as JsonValue};
 
 use crate::{IcebergResult, IcebergError};
 use crate::schema::{StructField, SchemaType, PrimitiveType, StructType};
+use crate::value::Value;
 use crate::partition::PartitionSpec;
 use super::manifest::{Manifest, ManifestEntry, ManifestEntryStatus};
 use super::datafile::{DataFile, DataFileContent, DataFileFormat};
@@ -158,7 +159,7 @@ impl ManifestEntrySerializer {
                         "null",
                         Self::partition_field_avro_schema(field)?
                     ],
-                    "default": "null",
+                    "default": JsonValue::Null,
                     "field-id": field.id,
                 }))
             })
@@ -449,6 +450,17 @@ impl ManifestEntrySerializer {
         }
     }
 
+    /// Serializes an Iceberg Value (that might be null) to an Avro value.
+    fn serialize_opt_value(value: Option<Value>) -> Result<AvroValue, AvroError> {
+        Ok(if let Some(value) = value {
+            AvroValue::Union(1, Box::new(
+                apache_avro::to_value(value)?
+            ))
+        } else {
+            AvroValue::Union(0, Box::new(AvroValue::Null))
+        })
+    }
+
     /// Manually serializes a DataFile struct with Avro. We can't use serde with Avro
     /// for this struct since its schema is dynamic.
     fn serialize_data_file(&self, data_file: &DataFile) -> IcebergResult<AvroRecord> {
@@ -467,12 +479,15 @@ impl ManifestEntrySerializer {
             DataFileFormat::Parquet => "PARQUET"
         });
         record.put("partition", AvroValue::Record(
-            data_file.partition.iter().map(|(k, v)| -> Result<_, AvroError> {
-                Ok((
-                    k.clone(),
-                    apache_avro::to_value(v)?
-                ))
-            }).collect::<Result<Vec<_>, AvroError>>()?
+            data_file.partition.values()
+                .iter()
+                .map(|(k, v)| -> Result<_, AvroError> {
+                    Ok((
+                        k.clone(),
+                        Self::serialize_opt_value(v.clone())?
+                    ))
+                })
+                .collect::<Result<Vec<_>, AvroError>>()?
         ));
         record.put("record_count", data_file.record_count);
         record.put("file_size_in_bytes", data_file.file_size_in_bytes);
@@ -552,7 +567,7 @@ impl ManifestEntrySerializer {
     }
 }
 
-/// Serializes the manifest into Avro format.
+/// Serializes a manifest into binary Avro format.
 pub(super) fn serialize_manifest_to_avro(manifest: &Manifest) -> IcebergResult<Vec<u8>> {
     let serializer = ManifestEntrySerializer::try_new(manifest.partition_spec())?;
 

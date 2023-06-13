@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::value::Value;
+use crate::partition::PartitionValues;
 
 #[derive(Debug, Clone)]
 pub enum DataFileContent {
@@ -16,6 +16,8 @@ pub enum DataFileFormat {
     Parquet
 }
 
+/// Points to a file containing table data, and stores partition values and statistics
+/// for the data.
 #[derive(Debug, Clone)]
 pub struct DataFile {
     /// Type of content stored by the data file: data, equality deletes, or position
@@ -26,7 +28,7 @@ pub struct DataFile {
     /// String file format name: avro, orc or parquet.
     pub file_format: DataFileFormat,
     /// Partition data tuple.
-    pub partition: HashMap<String, Value>,
+    pub partition: PartitionValues,
     /// Number of records in this file.
     pub record_count: i64,
     /// Total file size in bytes.
@@ -102,7 +104,7 @@ impl DataFileBuilder {
                 content: content,
                 file_path: String::from(file_path),
                 file_format: file_format,
-                partition: HashMap::new(),
+                partition: PartitionValues::default(),
                 record_count: record_count,
                 file_size_in_bytes: file_size_in_bytes,
                 column_sizes: None,
@@ -120,8 +122,15 @@ impl DataFileBuilder {
         }
     }
 
-    pub fn with_partition_values(mut self, partitions: HashMap<String, Value>) -> Self {
-        self.data_file.partition = partitions;
+    /// Add partition values to the `DataFile`.
+    ///
+    /// `partitions` should contain a map of the partition field name to its value. All
+    /// records in the file pointed by the `DataFile` must have these partition values.
+    pub fn with_partition_values(
+        mut self,
+        partition_values: PartitionValues
+    ) -> Self {
+        self.data_file.partition = partition_values;
         self
     }
 

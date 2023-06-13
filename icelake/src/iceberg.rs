@@ -15,7 +15,7 @@ use murmur3::murmur3_32;
 use crate::{IcebergError, IcebergResult};
 use crate::utils;
 use crate::schema::Schema;
-use crate::partition::{PartitionSpecModel, PartitionSpec, PartitionField};
+use crate::partition::{PartitionSpecModel, PartitionSpec, PartitionValues};
 use crate::sort::SortOrder;
 use crate::transaction::Transaction;
 use crate::storage::{IcebergStorage, IcebergPath};
@@ -111,35 +111,19 @@ pub struct IcebergTableMetadata {
 impl IcebergTableMetadata {
     pub fn try_new(
         location: String,
-        schemas: Vec<Schema>,
-        current_schema_id: i32,
-        partition_fields: Option<Vec<PartitionField>>
+        schema: Schema,
+        partition_spec: Option<PartitionSpec>
     ) -> IcebergResult<Self> {
         let sort_order = SortOrder::new();
         let sort_order_id = sort_order.order_id;
 
-        // Ensure current_schema_id is present in the list of schemas
-        let current_schema =
-            schemas.iter().find(|&schema| schema.id() == current_schema_id)
-            .ok_or(IcebergError::SchemaNotFound { schema_id: current_schema_id })?;
-
-        let partition_spec = match partition_fields {
-            Some(partition_fields) => {
-                PartitionSpec::try_new(
-                    0,
-                    partition_fields,
-                    current_schema.clone()
-                )?
-            },
-            None => {
-                PartitionSpec::unpartitioned()
-            }
-        };
+        let partition_spec = partition_spec.unwrap_or(PartitionSpec::unpartitioned());
         let partition_spec_id = partition_spec.spec_id();
         let last_partition_id = partition_spec.last_assigned_field_id();
 
+        let current_schema_id = schema.id();
         // Infer the maximum field id of the current schema.
-        let last_column_id = current_schema.max_field_id() + 1;
+        let last_column_id = schema.max_field_id() + 1;
 
         Ok(Self {
             format_version: IcebergTableVersion::V2,
@@ -148,7 +132,7 @@ impl IcebergTableMetadata {
             last_sequence_number: 0,
             last_updated_ms: utils::current_time_ms()?,
             last_column_id: last_column_id,
-            schemas: schemas,
+            schemas: vec![schema],
             current_schema_id: current_schema_id,
             partition_specs: vec![partition_spec.model()],
             default_spec_id: partition_spec_id,
@@ -358,7 +342,6 @@ impl IcebergTable {
             Bytes::from(json)
         )?;
 
-
         // TODO: This should be an atomic operation.
         // TODO: Testing for failures is needed.
         metadata_file.save().await?;
@@ -381,18 +364,20 @@ impl IcebergTable {
     /// This function may fail if the schema is invalid (empty), or if commiting the
     /// metadata file to object store fails, in which case [`IcebergError::ObjectStore`]
     /// is returned.
-    pub async fn create(&mut self, schema: Schema) -> IcebergResult<()> {
+    pub async fn create(
+        &mut self,
+        schema: Schema,
+        partition_spec: Option<PartitionSpec>
+    ) -> IcebergResult<()> {
         if schema.fields().is_empty() {
             Err(IcebergError::SchemaError {
                 message: "schema is empty".to_string()
             })
         } else {
-            let current_schema_id = schema.id();
             let metadata = IcebergTableMetadata::try_new(
                 self.storage.location().to_string(),
-                vec![schema],
-                current_schema_id,
-                None
+                schema,
+                partition_spec
             )?;
 
             self.commit(metadata).await
@@ -438,6 +423,14 @@ impl IcebergTable {
         })
     }
 
+    /// Detects if there is any existing table at the storage location specified
+    /// for this table.
+    ///
+    /// Returns the table state if a table exists, or `None` otherwise.
+    pub async fn detect(&self) -> Option<IcebergTableState> {
+        self.get_latest_state().await.ok()
+    }
+
     /// Loads an existing Iceberg table state from storage.
     ///
     /// # Errors
@@ -473,20 +466,31 @@ impl IcebergTable {
     /// to storage. Call [`save()`](IcebergFile::save) on the result to save it.
     pub fn new_data_file(
         &self,
+        partition_values: &PartitionValues,
         filename: &str,
         bytes: Bytes
     ) -> IcebergResult<IcebergFile> {
-        // Prefix every data file with a hash component.
-        let hash = murmur3_32(&mut std::io::Cursor::new(filename), 0)?;
-        let hash: [u8; 4] = hash.to_be_bytes();
+        let partition_spec = self.current_partition_spec()?;
+        let path = if partition_spec.is_empty() {
+            // Prefix every data file with a hash component.
+            let hash = murmur3_32(&mut std::io::Cursor::new(filename), 0)?;
+            let hash: [u8; 4] = hash.to_be_bytes();
 
-        let path = IcebergPath::from_iter(vec![
-            "data",
-            &format!("{:02x}{:02x}{:02x}{:02x}",
-                hash[0], hash[1], hash[2], hash[3]
-            ),
-            filename
-        ]);
+            IcebergPath::from_iter(vec![
+                "data",
+                &format!("{:02x}{:02x}{:02x}{:02x}",
+                    hash[0], hash[1], hash[2], hash[3]
+                ),
+                filename
+            ])
+        } else {
+            let mut path_parts: Vec<String> = Vec::new();
+            path_parts.push("data".to_string());
+            path_parts.extend(partition_values.path_parts());
+            path_parts.push(filename.to_string());
+
+            IcebergPath::from_iter(path_parts)
+        };
 
         Ok(IcebergFile::new(self.storage.clone(), path, bytes))
     }
@@ -530,7 +534,9 @@ impl IcebergTable {
 /// ```
 pub struct IcebergTableLoader {
     table_url: String,
-    storage_options: HashMap<String, String>
+    storage_options: HashMap<String, String>,
+    schema: Option<Schema>,
+    partition_spec: Option<PartitionSpec>
 }
 
 impl IcebergTableLoader {
@@ -543,6 +549,8 @@ impl IcebergTableLoader {
         Self {
             table_url: table_url.to_string(),
             storage_options: HashMap::new(),
+            schema: None,
+            partition_spec: None,
         }
     }
 
@@ -574,10 +582,23 @@ impl IcebergTableLoader {
         self
     }
 
-    fn build(self) -> IcebergResult<IcebergTable> {
+    pub fn with_schema(mut self, schema: Schema) -> Self {
+        self.schema = Some(schema);
+        self
+    }
+
+    pub fn with_partition_spec(
+        mut self,
+        partition_spec: PartitionSpec
+    ) -> Self {
+        self.partition_spec = Some(partition_spec);
+        self
+    }
+
+    fn build_table(&self) -> IcebergResult<IcebergTable> {
         let storage = IcebergStorage::from_url(
             &self.table_url,
-            self.storage_options,
+            self.storage_options.clone(),
         )?;
 
         Ok(IcebergTable::new(Arc::new(storage)))
@@ -593,11 +614,43 @@ impl IcebergTableLoader {
     /// [`IcebergError::ObjectStore`] could be returned if there was an error reading
     /// from the object storage.
     pub async fn load(self) -> IcebergResult<IcebergTable> {
-        let mut table = self.build()?;
+        let mut table = self.build_table()?;
 
         table.load().await?;
 
         Ok(table)
+    }
+
+    /// Creates a new Iceberg table at the provided url.
+    ///
+    /// # Errors
+    ///
+    /// [`IcebergError::SchemaError`] is returned if a schema has not been specified
+    /// using [`IcebergTableLoader::with_schema()`].
+    /// [`IcebergError::TableAlreadyExists`] is returned if an existing Iceberg schema
+    /// is detected at the given url.
+    /// [`IcebergError::ObjectStore`] could be returned if there was an error reading
+    /// or writing to the object storage.
+    pub async fn create(self) -> IcebergResult<IcebergTable> {
+        let mut table = self.build_table()?;
+
+        let schema = self.schema.ok_or(
+            IcebergError::SchemaError {
+                message: "missing schema".to_string()
+            }
+        )?;
+
+        match table.detect().await {
+            Some(..) => {
+                Err(IcebergError::TableAlreadyExists(
+                    table.location().to_string()
+                ))
+            },
+            None => {
+                table.create(schema, self.partition_spec).await?;
+                Ok(table)
+            }
+        }
     }
 
     /// Loads the state of an existing Iceberg table from storage, or creates it if it
@@ -605,10 +658,12 @@ impl IcebergTableLoader {
     ///
     /// # Errors
     ///
+    /// [`IcebergError::SchemaError`] is returned if a schema has not been specified
+    /// using [`IcebergTableLoader::with_schema()`].
     /// [`IcebergError::ObjectStore`] could be returned if there was an error reading
     /// or writing to the object storage.
-    pub async fn load_or_create(self, schema: Schema) -> IcebergResult<IcebergTable> {
-        let mut table = self.build()?;
+    pub async fn load_or_create(self) -> IcebergResult<IcebergTable> {
+        let mut table = self.build_table()?;
 
         let result = table.load().await;
         match result {
@@ -616,7 +671,13 @@ impl IcebergTableLoader {
             Err(err) => {
                 match err {
                     IcebergError::MetadataNotFound(..) => {
-                        table.create(schema).await?;
+                        let schema = self.schema.ok_or(
+                            IcebergError::SchemaError {
+                                message: "missing schema".to_string()
+                            }
+                        )?;
+
+                        table.create(schema, self.partition_spec).await?;
                         Ok(table)
                     },
                     _ => Err(err)
@@ -676,7 +737,7 @@ impl IcebergFile {
 
 #[cfg(test)]
 mod tests {
-    use crate::{IcebergError, IcebergTableMetadata};
+    use crate::IcebergTableMetadata;
     use crate::schema::{Schema, SchemaField, SchemaType, PrimitiveType};
 
     fn create_schema(schema_id: i32) -> Schema {
@@ -704,32 +765,13 @@ mod tests {
 
     #[test]
     fn new_metadata() {
-        let schema0 = create_schema(0);
-        let schema1 = create_schema(1);
         let metadata = IcebergTableMetadata::try_new(
             "s3://bucket/path/to/table".to_string(),
-            vec![schema0, schema1],
-            1,
+            create_schema(0),
             None
         ).unwrap();
 
-        assert_eq!(metadata.current_schema().id(), 1);
-    }
-
-    #[test]
-    fn new_metadata_with_incorrect_schema_id() {
-        let schema = create_schema(0);
-
-        // Schema id 1 is not in the list of schemas
-        assert!(matches!(
-            IcebergTableMetadata::try_new(
-                "s3://bucket/path/to/table".to_string(),
-                vec![schema],
-                1,
-                None
-            ),
-            Err(IcebergError::SchemaNotFound {..})
-        ));
+        assert_eq!(metadata.current_schema().id(), 0);
     }
 
     #[test]
