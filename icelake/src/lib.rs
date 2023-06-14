@@ -39,7 +39,8 @@
 //!
 //!     let table = IcebergTableLoader::from_url("s3://iceberg-bucket/users")
 //!         .with_storage_options(storage_options)
-//!         .load_or_create(schema)
+//!         .with_schema(schema)
+//!         .load_or_create()
 //!         .await;
 //!
 //!     match table {
@@ -65,6 +66,7 @@ mod utils;
 
 pub mod iceberg;
 pub mod schema;
+pub mod value;
 pub mod snapshot;
 pub mod partition;
 pub mod sort;
@@ -99,18 +101,21 @@ pub enum IcebergError {
     #[error("Invalid table location: {0}")]
     InvalidTableLocation(String),
 
+    #[error("Iceberg table already exists at: {0}")]
+    TableAlreadyExists(String),
+
     /// An operation has been attempted on an Iceberg table that was not initialized
     /// and therefore has no [IcebergTableMetadata] associated with it.
     #[error("Iceberg table not initialized")]
     TableNotInitialized,
 
-    /// Attempted to create an Iceberg table with a non existent schema id.
-    #[error("Schema with schema id {schema_id} not found in schema list")]
-    SchemaNotFound { schema_id: i32 },
-
     /// An error with creating an Iceberg table schema.
     #[error("Schema error: {message}")]
     SchemaError { message: String },
+
+    /// Error with Iceberg table partitioning.
+    #[error("Partition error: {message}")]
+    PartitionError { message: String },
 
     /// Failed serializing the table's metadata to json.
     #[error("Error serializing table metadata to json: {source}")]

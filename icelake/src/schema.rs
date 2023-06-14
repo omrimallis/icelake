@@ -455,11 +455,16 @@ impl Schema {
         self.schema.max_nested_field_id().unwrap()
     }
 
-    pub fn fields(&self) -> &Vec<SchemaField> {
+    pub fn fields(&self) -> &[SchemaField] {
         match &self.schema {
             SchemaType::Struct(s) => &s.fields,
             _ => panic!("unexpected schema type")
         }
+    }
+
+    pub fn get_field_by_name(&self, name: &str) -> Option<&SchemaField> {
+        self.fields().iter()
+            .find(|field| field.name == name)
     }
 
     pub fn encode(&self) -> IcebergResult<String> {

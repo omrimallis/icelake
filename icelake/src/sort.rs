@@ -1,7 +1,7 @@
 //! Interface to Iceberg table ordering.
 use serde::{Deserialize, Serialize};
 
-use crate::partition::Transform;
+use crate::partition::PartitionTransform;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 /// Defines the sort order for a field.
@@ -32,7 +32,7 @@ pub struct SortField {
     /// A source column id from the table’s schema
     pub source_id: i32,
     /// A transform that is used to produce values to be sorted on from the source column.
-    pub transform: Transform,
+    pub transform: PartitionTransform,
     /// A sort direction, that can only be either asc or desc
     pub direction: SortDirection,
     /// A null order that describes the order of null values when sorted.
