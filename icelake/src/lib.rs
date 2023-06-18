@@ -98,7 +98,7 @@ pub enum IcebergError {
     /// The URL location specified for the table is invalid: It might have an invalid
     /// URL scheme, point to an invalid path or path that is not a directory when using
     /// local file systems.
-    #[error("Invalid table location: {0}")]
+    #[error("invalid table location: {0}")]
     InvalidTableLocation(String),
 
     #[error("Iceberg table already exists at: {0}")]
@@ -110,51 +110,51 @@ pub enum IcebergError {
     TableNotInitialized,
 
     /// An error with creating an Iceberg table schema.
-    #[error("Schema error: {message}")]
+    #[error("schema error: {message}")]
     SchemaError { message: String },
 
     /// Error with Iceberg table partitioning.
-    #[error("Partition error: {message}")]
+    #[error("partition error: {message}")]
     PartitionError { message: String },
 
     /// Failed serializing the table's metadata to json.
-    #[error("Error serializing table metadata to json: {source}")]
+    #[error("error serializing table metadata to json: {source}")]
     SerializeMetadataJson {source: serde_json::Error},
 
     /// Attempted to parse an invalid metadata file.
-    #[error("Error deserializing table metadata from json: {source}")]
+    #[error("error deserializing table metadata from json: {source}")]
     InvalidMetadata {source: serde_json::Error},
 
     /// Failed serializing the table's schema to json.
-    #[error("Error serializing table schema to json: {source}")]
+    #[error("error serializing table schema to json: {source}")]
     SerializeSchemaJson { source: serde_json::Error },
 
     /// Generic JSON serialization error.
-    #[error("Error serializing json")]
+    #[error("error serializing json")]
     SerializeJson { source: serde_json::Error },
 
     /// Failed serializing or deserializing an Avro file
     /// (manifest or manifest list files).
-    #[error("Error serializing or deserializing Avro: {source}")]
+    #[error("error serializing or deserializing Avro")]
     AvroError {#[from] source: apache_avro::Error},
 
     /// A path to an object that is not in the table's location was ecnountered.
-    #[error("Invalid object store path: {source}")]
+    #[error("invalid object store path")]
     InvalidPath {#[from] source: object_store::path::Error},
 
     /// An error from the underlying object storage.
-    #[error("Object storage error: {source}")]
+    #[error("object store error")]
     ObjectStore {#[from] source: object_store::Error},
 
     /// An error related to the Parquet file format.
-    #[error("Parquet error: {source}")]
+    #[error("Parquet error")]
     ParquetError {#[from] source: parquet::errors::ParquetError},
 
     /// A system I/O error
-    #[error("I/O error: {source}")]
+    #[error("I/O error")]
     IoError {#[from] source: std::io::Error},
 
     /// Apache Arrow error
-    #[error("Error in Arrow library: {source}")]
+    #[error("Arrow error")]
     ArrowError{#[from] source: arrow::error::ArrowError},
 }
