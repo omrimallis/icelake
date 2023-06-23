@@ -60,7 +60,7 @@
 use thiserror;
 use object_store;
 use serde_json;
-use arrow;
+use arrow_schema;
 
 mod utils;
 
@@ -74,7 +74,7 @@ pub mod manifest;
 pub mod storage;
 pub mod transaction;
 pub mod writer;
-pub mod arrow_schema;
+pub mod arrow;
 
 pub use crate::iceberg::{
     IcebergTable, IcebergTableVersion, IcebergTableMetadata,
@@ -156,5 +156,5 @@ pub enum IcebergError {
 
     /// Apache Arrow error
     #[error("Arrow error")]
-    ArrowError{#[from] source: arrow::error::ArrowError},
+    ArrowError{#[from] source: arrow_schema::ArrowError},
 }

@@ -1,8 +1,8 @@
 //! Conversion between Iceberg table schema and Arrow schema
 use std::sync::Arc;
 
-use arrow::error::ArrowError;
-use arrow::datatypes::{
+use arrow_schema::ArrowError;
+use arrow_schema::{
     Schema as ArrowSchema, Field as ArrowField, Fields as ArrowFields,
     DataType as ArrowDataType, TimeUnit as ArrowTimeUnit,
 };
@@ -279,7 +279,7 @@ pub fn iceberg_to_arrow_schema(schema: &Schema) -> IcebergResult<ArrowSchema> {
 mod tests {
     use std::sync::Arc;
 
-    use arrow::datatypes::{
+    use arrow_schema::{
         Schema as ArrowSchema, Field as ArrowField, Fields as ArrowFields,
         DataType as ArrowDataType
     };

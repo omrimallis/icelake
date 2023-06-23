@@ -3,10 +3,9 @@ use std::collections::HashMap;
 
 use rand::Rng;
 
-use arrow::error::ArrowError;
-use arrow::array::{Int32Array, Int64Array, TimestampMicrosecondArray, Float64Array};
-use arrow::datatypes::{SchemaRef as ArrowSchemaRef};
-use arrow::record_batch::RecordBatch;
+use arrow_schema::{ArrowError, SchemaRef as ArrowSchemaRef};
+use arrow_array::{Int32Array, Int64Array, TimestampMicrosecondArray, Float64Array};
+use arrow_array::RecordBatch;
 
 use icelake::{IcebergResult, IcebergTableLoader};
 use icelake::schema::SchemaBuilder;

@@ -8,8 +8,8 @@ use chrono;
 use rand::Rng;
 use uuid::Uuid;
 use bytes::Bytes;
-use arrow::datatypes::{SchemaRef as ArrowSchemaRef};
-use arrow::record_batch::RecordBatch;
+use arrow_schema::{SchemaRef as ArrowSchemaRef};
+use arrow_array::RecordBatch;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 
@@ -18,7 +18,7 @@ use crate::value::Value;
 use crate::transaction::AppendFilesOperation;
 use crate::partition::{PartitionSpec, PartitionValues};
 use crate::manifest::{DataFile, DataFileContent, DataFileFormat};
-use crate::arrow_schema::iceberg_to_arrow_schema;
+use crate::arrow::iceberg_to_arrow_schema;
 
 /// Writes Apache Arrow `RecordBatch`es to an Iceberg table in Parquet format.
 pub struct RecordBatchWriter {
