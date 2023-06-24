@@ -260,22 +260,12 @@ impl StructField {
         required: bool,
         r#type: SchemaType
     ) -> Self {
-        StructField::new_with_doc(id, name, required, r#type, None)
-    }
-
-    pub fn new_with_doc(
-        id: i32,
-        name: &str,
-        required: bool,
-        r#type: SchemaType,
-        doc: Option<String>
-    ) -> Self {
         Self {
             id: id,
             name: name.to_string(),
             required: required,
             r#type: r#type,
-            doc: doc,
+            doc: None,
         }
     }
 
