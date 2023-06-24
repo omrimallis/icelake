@@ -1,5 +1,6 @@
 //! Conversion between Iceberg table schema and Arrow schema
 use std::sync::Arc;
+use std::collections::HashMap;
 
 use arrow_schema::ArrowError;
 use arrow_schema::{
@@ -12,6 +13,8 @@ use crate::schema::{
     Schema, SchemaField, SchemaType,
     PrimitiveType, ListType, StructType, StructField
 };
+
+const FIELD_ID_KEY: &str = "ICEBERG:field_id";
 
 impl TryFrom<&SchemaType> for ArrowDataType {
     type Error = ArrowError;
@@ -71,13 +74,20 @@ impl TryFrom<&SchemaType> for ArrowDataType {
                 ArrowDataType::Struct(ArrowFields::from(converted_fields?))
             },
             SchemaType::List(list_type) => {
-                ArrowDataType::List(Arc::new(ArrowField::new(
-                    // Iceberg list fields do not have a name.
-                    // Generate one based on the field ID.
-                    format!("field_{}", list_type.element_id),
-                    (&*list_type.element).try_into()?,
-                    !list_type.element_required
-                )))
+                ArrowDataType::List(Arc::new(
+                    ArrowField::new(
+                        // Iceberg list fields do not have a name.
+                        // Generate one based on the field ID.
+                        format!("field_{}", list_type.element_id),
+                        (&*list_type.element).try_into()?,
+                        !list_type.element_required
+                    ).with_metadata(HashMap::from_iter([
+                        (
+                            FIELD_ID_KEY.to_string(),
+                            list_type.element_id.to_string()
+                        )
+                    ]))
+                ))
             },
             SchemaType::Map(map_type) => {
                 ArrowDataType::Map(
@@ -88,12 +98,22 @@ impl TryFrom<&SchemaType> for ArrowDataType {
                                 "key",
                                 (&*map_type.key).try_into()?,
                                 false
-                            ),
+                            ).with_metadata(HashMap::from_iter([
+                                (
+                                    FIELD_ID_KEY.to_string(),
+                                    map_type.key_id.to_string()
+                                )
+                            ])),
                             ArrowField::new(
                                 "value",
                                 (&*map_type.value).try_into()?,
                                 !map_type.value_required
-                            )
+                            ).with_metadata(HashMap::from_iter([
+                                (
+                                    FIELD_ID_KEY.to_string(),
+                                    map_type.value_id.to_string()
+                                )
+                            ]))
                         ])),
                         true
                     )),
@@ -110,11 +130,18 @@ impl TryFrom<&StructField> for ArrowField {
     fn try_from(field: &StructField) -> Result<Self, Self::Error> {
         let converted_type: ArrowDataType = (&field.r#type).try_into()?;
 
-        Ok(ArrowField::new(
+        let arrow_field = ArrowField::new(
             field.name.clone(),
             converted_type,
             !field.required
-        ))
+        ).with_metadata(HashMap::from_iter([
+            (
+                FIELD_ID_KEY.to_string(),
+                field.id.to_string()
+            )
+        ]));
+
+        Ok(arrow_field)
     }
 }
 
@@ -267,6 +294,9 @@ impl TryFrom<&ArrowField> for SchemaField {
 }
 
 /// Converts an Iceberg table schema to an Arrow schema.
+///
+/// Iceberg field ids are encoded in the Arrow field metadata with the key
+/// `"ICEBERG:field_id"`.
 pub fn iceberg_to_arrow_schema(schema: &Schema) -> IcebergResult<ArrowSchema> {
     <ArrowSchema as TryFrom<&Schema>>::try_from(schema).map_err(|e| {
         IcebergError::SchemaError {
@@ -277,17 +307,22 @@ pub fn iceberg_to_arrow_schema(schema: &Schema) -> IcebergResult<ArrowSchema> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use super::*;
 
-    use arrow_schema::{
-        Schema as ArrowSchema, Field as ArrowField, Fields as ArrowFields,
-        DataType as ArrowDataType
-    };
-
-    use crate::schema::{
-        Schema, SchemaField, SchemaType,
-        PrimitiveType, ListType, StructType, StructField
-    };
+    fn new_arrow_field(
+        name: impl Into<String>,
+        data_type: ArrowDataType,
+        nullable: bool,
+        iceberg_id: i32
+    ) -> ArrowField {
+        ArrowField::new(name, data_type, nullable)
+            .with_metadata(HashMap::from_iter([
+                (
+                    FIELD_ID_KEY.to_string(),
+                    iceberg_id.to_string()
+                )
+            ]))
+    }
 
     #[test]
     fn iceberg_to_arrow_struct() {
@@ -304,7 +339,7 @@ mod tests {
                     SchemaType::Primitive(PrimitiveType::Int)
                 ),
                 StructField::new(
-                    1,
+                    2,
                     "name",
                     true,
                     SchemaType::Primitive(PrimitiveType::String)
@@ -314,13 +349,14 @@ mod tests {
 
         let arrow_field: ArrowField = field.try_into().unwrap();
         
-        assert_eq!(arrow_field, ArrowField::new(
+        assert_eq!(arrow_field, new_arrow_field(
             "user",
             ArrowDataType::Struct(ArrowFields::from(vec![
-                ArrowField::new("id", ArrowDataType::Int32, false),
-                ArrowField::new("name", ArrowDataType::Utf8, false)
+                new_arrow_field("id", ArrowDataType::Int32, false, 1),
+                new_arrow_field("name", ArrowDataType::Utf8, false, 2)
             ])),
-            true
+            true,
+            0
         ));
     }
 
@@ -339,14 +375,16 @@ mod tests {
 
         let arrow_field: ArrowField = field.try_into().unwrap();
 
-        assert_eq!(arrow_field, ArrowField::new(
+        assert_eq!(arrow_field, new_arrow_field(
             "users",
-            ArrowDataType::List(Arc::new(ArrowField::new(
+            ArrowDataType::List(Arc::new(new_arrow_field(
                 "field_1",
                 ArrowDataType::Utf8,
-                true
+                true,
+                1
             ))),
-            true
+            true,
+            0
         ));
     }
 
@@ -360,7 +398,7 @@ mod tests {
                 SchemaType::Primitive(PrimitiveType::Int)
             ),
             SchemaField::new(
-                1,
+                2,
                 "name",
                 true,
                 SchemaType::Primitive(PrimitiveType::String)
@@ -370,8 +408,8 @@ mod tests {
         let arrow_schema: ArrowSchema = schema.try_into().unwrap();
 
         assert_eq!(arrow_schema, ArrowSchema::new(vec![
-            ArrowField::new("id", ArrowDataType::Int32, false),
-            ArrowField::new("name", ArrowDataType::Utf8, false)
+            new_arrow_field("id", ArrowDataType::Int32, false, 1),
+            new_arrow_field("name", ArrowDataType::Utf8, false, 2)
         ]));
     }
 }
