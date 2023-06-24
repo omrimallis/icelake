@@ -8,7 +8,14 @@ use chrono;
 use rand::Rng;
 use uuid::Uuid;
 use bytes::Bytes;
-use arrow_schema::{SchemaRef as ArrowSchemaRef};
+use arrow_schema::{
+    Schema as ArrowSchema,
+    SchemaRef as ArrowSchemaRef,
+    Field as ArrowField,
+    FieldRef as ArrowFieldRef,
+    Fields as ArrowFields,
+    DataType as ArrowDataType,
+};
 use arrow_array::RecordBatch;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
@@ -19,6 +26,66 @@ use crate::transaction::AppendFilesOperation;
 use crate::partition::{PartitionSpec, PartitionValues};
 use crate::manifest::{DataFile, DataFileContent, DataFileFormat};
 use crate::arrow::iceberg_to_arrow_schema;
+
+fn arrow_field_add_parquet_id(arrow_field: &ArrowFieldRef) -> ArrowFieldRef {
+    let mut metadata = arrow_field.metadata().clone();
+    if let Some(field_id) = metadata.get("ICEBERG:field_id") {
+        metadata.insert("PARQUET:field_id".to_string(), field_id.clone());
+    }
+
+    Arc::new(
+        ArrowField::new(
+            arrow_field.name(),
+            match arrow_field.data_type() {
+                ArrowDataType::List(nested_field) => {
+                    ArrowDataType::List(
+                        arrow_field_add_parquet_id(nested_field)
+                    )
+                },
+                ArrowDataType::FixedSizeList(nested_field, s) => {
+                    ArrowDataType::FixedSizeList(
+                        arrow_field_add_parquet_id(nested_field),
+                        *s
+                    )
+                },
+                ArrowDataType::LargeList(nested_field) => {
+                    ArrowDataType::LargeList(
+                        arrow_field_add_parquet_id(nested_field),
+                    )
+                },
+                ArrowDataType::Struct(nested_fields) => {
+                    ArrowDataType::Struct(
+                        arrow_fields_add_parquet_id(nested_fields),
+                    )
+                },
+                ArrowDataType::Union(..) => { todo!() },
+                ArrowDataType::Dictionary(..) => { todo!() },
+                ArrowDataType::Map(nested_field, s) => {
+                    ArrowDataType::Map(
+                        arrow_field_add_parquet_id(nested_field),
+                        *s
+                    )
+                },
+                ArrowDataType::RunEndEncoded(..) => { todo!() },
+                data_type => data_type.clone(),
+            },
+            arrow_field.is_nullable()
+        ).with_metadata(metadata)
+    )
+}
+
+fn arrow_fields_add_parquet_id(arrow_fields: &ArrowFields) -> ArrowFields {
+    arrow_fields.into_iter().map(arrow_field_add_parquet_id).collect()
+}
+
+/// Adds parquet field ids to arrow field metadata, based on the iceberg field id if
+/// present.
+fn arrow_schema_add_parquet_ids(arrow_schema: ArrowSchema) -> ArrowSchema {
+    ArrowSchema::new_with_metadata(
+        arrow_fields_add_parquet_id(arrow_schema.fields()),
+        arrow_schema.metadata().clone()
+    )
+}
 
 /// Writes Apache Arrow `RecordBatch`es to an Iceberg table in Parquet format.
 pub struct RecordBatchWriter {
@@ -39,8 +106,11 @@ impl RecordBatchWriter {
     /// Creates a new `RecordBatchWriter` for the given table, deriving the schema and
     /// partition fields from it.
     pub fn for_table(table: &IcebergTable) -> IcebergResult<Self> {
+        let arrow_schema = iceberg_to_arrow_schema(table.current_schema()?)?;
+        let arrow_schema = arrow_schema_add_parquet_ids(arrow_schema);
+
         Ok(Self {
-            arrow_schema: Arc::new(iceberg_to_arrow_schema(table.current_schema()?)?),
+            arrow_schema: Arc::new(arrow_schema),
             partition_spec: table.current_partition_spec()?,
             writers: HashMap::new(),
             writer_props: WriterProperties::builder()
@@ -67,10 +137,8 @@ impl RecordBatchWriter {
 
     fn get_or_insert_writer<'a>(
         &mut self,
-        source_values: HashMap<i32, Option<Value>>
+        partition_values: PartitionValues
     ) -> IcebergResult<&mut ArrowWriter<Vec<u8>>> {
-        let partition_values = self.partition_spec.partition_values(source_values)?;
-
         Ok(match self.writers.contains_key(&partition_values) {
             true => self.writers.get_mut(&partition_values).unwrap(),
             false => {
@@ -97,7 +165,8 @@ impl RecordBatchWriter {
             })
         }
 
-        let writer = self.get_or_insert_writer(source_values)?;
+        let partition_values = self.partition_spec.partition_values(source_values)?;
+        let writer = self.get_or_insert_writer(partition_values)?;
         writer.write(batch)?;
 
         Ok(())
