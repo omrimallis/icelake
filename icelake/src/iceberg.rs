@@ -112,7 +112,8 @@ impl IcebergTableMetadata {
     pub fn try_new(
         location: String,
         schema: Schema,
-        partition_spec: Option<PartitionSpec>
+        partition_spec: Option<PartitionSpec>,
+        properties: Option<HashMap<String, String>>,
     ) -> IcebergResult<Self> {
         let sort_order = SortOrder::new();
         let sort_order_id = sort_order.order_id;
@@ -137,7 +138,7 @@ impl IcebergTableMetadata {
             partition_specs: vec![partition_spec.model()],
             default_spec_id: partition_spec_id,
             last_partition_id: last_partition_id,
-            properties: Some(HashMap::new()),
+            properties: properties,
             current_snapshot_id: Some(-1),
             snapshots: Some(Vec::new()),
             snapshot_log: Some(Vec::new()),
@@ -355,33 +356,19 @@ impl IcebergTable {
         Ok(())
     }
 
-    /// Initializes a new Iceberg table with the given schema at the table's location.
-    /// This will create the first metadata file for the table, with the given schema
-    /// set as the current schema.
+    /// Initializes a new Iceberg table with the given metadata at the table's location.
+    /// This will create the first metadata file for the table and commit it.
     ///
     /// # Errors
     ///
-    /// This function may fail if the schema is invalid (empty), or if commiting the
+    /// This function may fail if the metadata is invalid, or if commiting the
     /// metadata file to object store fails, in which case [`IcebergError::ObjectStore`]
     /// is returned.
     pub async fn create(
         &mut self,
-        schema: Schema,
-        partition_spec: Option<PartitionSpec>
+        metadata: IcebergTableMetadata,
     ) -> IcebergResult<()> {
-        if schema.fields().is_empty() {
-            Err(IcebergError::SchemaError {
-                message: "schema is empty".to_string()
-            })
-        } else {
-            let metadata = IcebergTableMetadata::try_new(
-                self.storage.location().to_string(),
-                schema,
-                partition_spec
-            )?;
-
-            self.commit(metadata).await
-        }
+        self.commit(metadata).await
     }
 
     async fn get_latest_state(&self) -> IcebergResult<IcebergTableState> {
@@ -536,7 +523,8 @@ pub struct IcebergTableLoader {
     table_url: String,
     storage_options: HashMap<String, String>,
     schema: Option<Schema>,
-    partition_spec: Option<PartitionSpec>
+    partition_spec: Option<PartitionSpec>,
+    properties: Option<HashMap<String, String>>,
 }
 
 impl IcebergTableLoader {
@@ -551,6 +539,7 @@ impl IcebergTableLoader {
             storage_options: HashMap::new(),
             schema: None,
             partition_spec: None,
+            properties: None
         }
     }
 
@@ -592,6 +581,14 @@ impl IcebergTableLoader {
         partition_spec: PartitionSpec
     ) -> Self {
         self.partition_spec = Some(partition_spec);
+        self
+    }
+
+    pub fn with_properties(
+        mut self,
+        properties: HashMap<String, String>
+    ) -> Self {
+        self.properties = Some(properties);
         self
     }
 
@@ -647,7 +644,14 @@ impl IcebergTableLoader {
                 ))
             },
             None => {
-                table.create(schema, self.partition_spec).await?;
+                let metadata = IcebergTableMetadata::try_new(
+                    self.table_url,
+                    schema,
+                    self.partition_spec,
+                    self.properties
+                )?;
+
+                table.create(metadata).await?;
                 Ok(table)
             }
         }
@@ -677,7 +681,14 @@ impl IcebergTableLoader {
                             }
                         )?;
 
-                        table.create(schema, self.partition_spec).await?;
+                        let metadata = IcebergTableMetadata::try_new(
+                            self.table_url,
+                            schema,
+                            self.partition_spec,
+                            self.properties
+                        )?;
+
+                        table.create(metadata).await?;
                         Ok(table)
                     },
                     _ => Err(err)

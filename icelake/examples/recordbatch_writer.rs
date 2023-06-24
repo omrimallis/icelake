@@ -80,6 +80,10 @@ async fn run() -> IcebergResult<()> {
         .with_env_options()
         .with_schema(schema.clone())
         .with_partition_spec(partition_spec)
+        .with_properties(HashMap::from_iter([(
+            "commit.retry.num-retries".to_string(),
+            "4".to_string()
+        )]))
         .load_or_create()
         .await?;
 
