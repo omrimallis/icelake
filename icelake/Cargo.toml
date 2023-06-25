@@ -21,9 +21,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_repr = { version = "0.1" }
 serde_json = { version = "1.0" }
 apache-avro = { version = "0.14" }
-arrow-schema = { version = "42" }
-arrow-array = { version = "42" }
-parquet = { version = "42" }
+arrow-schema = { git = "https://github.com/omrimallis/arrow-rs", branch = "parquet-field-id" }
+arrow-array = { git = "https://github.com/omrimallis/arrow-rs", branch = "parquet-field-id" }
+parquet = { git = "https://github.com/omrimallis/arrow-rs", branch = "parquet-field-id" }
 murmur3 = { version = "0.5.2" }
 
 [features]
