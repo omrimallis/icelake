@@ -779,6 +779,7 @@ mod tests {
         let metadata = IcebergTableMetadata::try_new(
             "s3://bucket/path/to/table".to_string(),
             create_schema(0),
+            None,
             None
         ).unwrap();
 
