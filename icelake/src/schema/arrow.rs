@@ -10,8 +10,8 @@ use arrow_schema::{
 
 use crate::{IcebergResult, IcebergError};
 use crate::schema::{
-    Schema, SchemaField, SchemaType,
-    PrimitiveType, ListType, StructType, StructField
+    Schema, Field, SchemaType,
+    PrimitiveType, ListType, StructType,
 };
 
 const FIELD_ID_KEY: &str = "ICEBERG:field_id";
@@ -96,10 +96,10 @@ impl TryFrom<&SchemaType> for ArrowDataType {
     }
 }
 
-impl TryFrom<&StructField> for ArrowField {
+impl TryFrom<&Field> for ArrowField {
     type Error = ArrowError;
 
-    fn try_from(field: &StructField) -> Result<Self, Self::Error> {
+    fn try_from(field: &Field) -> Result<Self, Self::Error> {
         let converted_type: ArrowDataType = (&field.r#type).try_into()?;
 
         let arrow_field = ArrowField::new(
@@ -117,10 +117,10 @@ impl TryFrom<&StructField> for ArrowField {
     }
 }
 
-impl TryFrom<StructField> for ArrowField {
+impl TryFrom<Field> for ArrowField {
     type Error = ArrowError;
 
-    fn try_from(field: StructField) -> Result<Self, Self::Error> {
+    fn try_from(field: Field) -> Result<Self, Self::Error> {
         ArrowField::try_from(&field)
     }
 }
@@ -216,7 +216,7 @@ impl TryFrom<&ArrowDataType> for SchemaType {
             ArrowDataType::Struct(fields) => {
                 Ok(SchemaType::Struct(StructType::new(
                     fields.iter().map(|field| field.as_ref().try_into())
-                        .collect::<Result<Vec<StructField>, _>>()?
+                        .collect::<Result<Vec<Field>, _>>()?
                 )))
             },
             ArrowDataType::Decimal128(p, s) => {
@@ -251,11 +251,11 @@ impl TryFrom<&ArrowDataType> for SchemaType {
     }
 }
 
-impl TryFrom<&ArrowField> for SchemaField {
+impl TryFrom<&ArrowField> for Field {
     type Error = ArrowError;
 
     fn try_from(arrow_field: &ArrowField) -> Result<Self, Self::Error> {
-        Ok(SchemaField::new(
+        Ok(Field::new(
             // TODO: Handle field IDs
             0,
             arrow_field.name(),
@@ -299,18 +299,18 @@ mod tests {
     #[test]
     fn iceberg_to_arrow_struct() {
         // Ensure Iceberg struct fields are converted to Arrow structs correctly.
-        let field = StructField::new(
+        let field = Field::new(
             0,
             "user",
             false, 
             SchemaType::Struct(StructType::new(vec![
-                StructField::new(
+                Field::new(
                     1,
                     "id",
                     true,
                     SchemaType::Primitive(PrimitiveType::Int)
                 ),
-                StructField::new(
+                Field::new(
                     2,
                     "name",
                     true,
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn iceberg_to_arrow_list() {
-        let field = StructField::new(
+        let field = Field::new(
             0,
             "users",
             false,
@@ -363,13 +363,13 @@ mod tests {
     #[test]
     fn iceberg_to_arrow_schema() {
         let schema = Schema::new(0, vec![
-            SchemaField::new(
+            Field::new(
                 1,
                 "id",
                 true,
                 SchemaType::Primitive(PrimitiveType::Int)
             ),
-            SchemaField::new(
+            Field::new(
                 2,
                 "name",
                 true,

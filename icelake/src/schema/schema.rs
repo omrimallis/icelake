@@ -183,23 +183,23 @@ pub struct StructType {
     /// Always set to "struct".
     pub r#type: Cow<'static, str>,
     /// The fields of the struct.
-    pub fields: Vec<StructField>,
+    pub fields: Vec<Field>,
 }
 
 impl StructType {
-    pub fn new(fields: Vec<StructField>) -> Self {
+    pub fn new(fields: Vec<Field>) -> Self {
         let tag = Cow::Borrowed(STRUCT_TAG);
         Self { r#type: tag, fields: fields }
     }
 
-    pub fn fields(&self) -> &[StructField] {
+    pub fn fields(&self) -> &[Field] {
         &self.fields
     }
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
-/// Details of a struct in a field.
-pub struct StructField {
+/// An Iceberg schema field.
+pub struct Field {
     /// Unique Id
     pub id: i32,
     /// Field Name
@@ -214,7 +214,7 @@ pub struct StructField {
     // TODO: initial-default and write-default
 }
 
-impl StructField {
+impl Field {
     pub fn new(
         id: i32,
         name: &str,
@@ -230,7 +230,7 @@ impl StructField {
         }
     }
 
-    /// Creates a new `StructField` with type [`SchemaType::Primitive`]
+    /// Creates a new `Field` with type [`SchemaType::Primitive`]
     pub fn new_primitive(
         id: i32,
         name: &str,
@@ -242,12 +242,12 @@ impl StructField {
         )
     }
 
-    /// Creates a new `StructField` with type [`SchemaType::Struct`]
+    /// Creates a new `Field` with type [`SchemaType::Struct`]
     pub fn new_struct(
         id: i32,
         name: &str,
         required: bool,
-        fields: impl IntoIterator<Item = StructField>
+        fields: impl IntoIterator<Item = Field>
     ) -> Self {
         Self::new(
             id, name, required,
@@ -255,12 +255,12 @@ impl StructField {
         )
     }
 
-    /// Creates a new `StructField` with type [`SchemaType::List`]
+    /// Creates a new `Field` with type [`SchemaType::List`]
     pub fn new_list(
         id: i32,
         name: &str,
         required: bool,
-        field: StructField,
+        field: Field,
     ) -> Self {
         Self::new(
             id, name, required,
@@ -272,13 +272,13 @@ impl StructField {
         )
     }
 
-    /// Creates a new `StructField` with type [`SchemaType::Map`]
+    /// Creates a new `Field` with type [`SchemaType::Map`]
     pub fn new_map(
         id: i32,
         name: &str,
         required: bool,
-        key: StructField,
-        value: StructField,
+        key: Field,
+        value: Field,
     ) -> Self {
         Self::new(
             id, name, required,
@@ -369,13 +369,13 @@ impl StructField {
 #[serde(from = "ListTypeModel", into = "ListTypeModel")]
 /// A field type that represents a list of identical elements.
 pub struct ListType {
-    field: Box<StructField>
+    field: Box<Field>
 }
 
 impl ListType {
     pub fn new(element_id: i32, element_required: bool, element: SchemaType) -> Self {
         Self {
-            field: Box::new(StructField::new(
+            field: Box::new(Field::new(
                 element_id,
                 "element",
                 element_required,
@@ -385,7 +385,7 @@ impl ListType {
     }
 
     /// Returns a reference to the nested field element
-    pub fn field(&self) -> &StructField {
+    pub fn field(&self) -> &Field {
         &self.field
     }
 }
@@ -435,8 +435,8 @@ impl From<ListTypeModel> for ListType {
 /// optional or required. Both map keys and map values may be any type,
 /// including nested types.
 pub struct MapType {
-    key: Box<StructField>,
-    value: Box<StructField>,
+    key: Box<Field>,
+    value: Box<Field>,
 }
 
 impl MapType {
@@ -448,13 +448,13 @@ impl MapType {
         value_type: SchemaType
     ) -> Self {
         Self {
-            key: Box::new(StructField::new(
+            key: Box::new(Field::new(
                 key_id,
                 "key",
                 true,
                 key_type
             )),
-            value: Box::new(StructField::new(
+            value: Box::new(Field::new(
                 value_id,
                 "value",
                 value_required,
@@ -463,11 +463,11 @@ impl MapType {
         }
     }
 
-    pub fn key(&self) -> &StructField {
+    pub fn key(&self) -> &Field {
         &self.key
     }
 
-    pub fn value(&self) -> &StructField {
+    pub fn value(&self) -> &Field {
         &self.value
     }
 }
@@ -543,7 +543,7 @@ impl SchemaType {
     /// Assigns new ids from the `next_id` function to this field and all
     /// recursively nested fields.
     ///
-    /// Do not use directly. Use `StructField::with_fresh_ids()` instead.
+    /// Do not use directly. Use `Field::with_fresh_ids()` instead.
     fn with_fresh_ids<F>(self, next_id: &mut F) -> Self
     where
         F: FnMut() -> i32
@@ -601,13 +601,10 @@ pub struct Schema {
     schema: SchemaType,
 }
 
-/// A top-level field in the Iceberg table schema.
-pub type SchemaField = StructField;
-
 impl Schema {
     pub fn new(
         schema_id: i32,
-        fields: Vec<SchemaField>
+        fields: Vec<Field>
     ) -> Self {
         Self {
             schema_id: schema_id,
@@ -630,7 +627,7 @@ impl Schema {
     }
 
     /// Returns a shared slice of the top-level fields in the schema.
-    pub fn fields(&self) -> &[SchemaField] {
+    pub fn fields(&self) -> &[Field] {
         &self.struct_type().fields
     }
 
@@ -639,13 +636,13 @@ impl Schema {
     ///
     /// A reference is returned for each primitive field,
     /// list element, nested struct field and map key value element.
-    pub fn all_fields(&self) -> impl Iterator<Item = &StructField> {
+    pub fn all_fields(&self) -> impl Iterator<Item = &Field> {
         self.struct_type().fields.iter()
             .flat_map(|field| field.all_fields())
     }
 
     /// Finds a top-level schema field by its name.
-    pub fn get_field_by_name(&self, name: &str) -> Option<&SchemaField> {
+    pub fn get_field_by_name(&self, name: &str) -> Option<&Field> {
         self.fields().iter()
             .find(|field| field.name == name)
     }
@@ -687,7 +684,7 @@ impl Schema {
 pub struct SchemaBuilder {
     schema_id: i32,
     next_field_id: RefCell<i32>,
-    fields: Vec<SchemaField>,
+    fields: Vec<Field>,
 }
 
 impl SchemaBuilder {
@@ -699,11 +696,11 @@ impl SchemaBuilder {
         }
     }
 
-    pub fn add_field(&mut self, field: SchemaField) {
+    pub fn add_field(&mut self, field: Field) {
         self.fields.push(field);
     }
 
-    pub fn add_fields(&mut self, fields: Vec<SchemaField>) {
+    pub fn add_fields(&mut self, fields: Vec<Field>) {
         self.fields.extend(fields);
     }
 
@@ -715,8 +712,8 @@ impl SchemaBuilder {
         &self,
         name: &str,
         r#type: PrimitiveType
-    ) -> SchemaField {
-        SchemaField::new(
+    ) -> Field {
+        Field::new(
             self.next_field_id(),
             name,
             false,
@@ -724,32 +721,32 @@ impl SchemaBuilder {
         )
     }
 
-    pub fn new_timestamp_field(&self, name: &str) -> SchemaField {
+    pub fn new_timestamp_field(&self, name: &str) -> Field {
         self.new_primitive_field(name, PrimitiveType::Timestamp)
     }
 
-    pub fn new_string_field(&self, name: &str) -> SchemaField {
+    pub fn new_string_field(&self, name: &str) -> Field {
         self.new_primitive_field(name, PrimitiveType::String)
     }
 
-    pub fn new_int_field(&self, name: &str) -> SchemaField {
+    pub fn new_int_field(&self, name: &str) -> Field {
         self.new_primitive_field(name, PrimitiveType::Int)
     }
 
-    pub fn new_long_field(&self, name: &str) -> SchemaField {
+    pub fn new_long_field(&self, name: &str) -> Field {
         self.new_primitive_field(name, PrimitiveType::Long)
     }
 
-    pub fn new_boolean_field(&self, name: &str) -> SchemaField {
+    pub fn new_boolean_field(&self, name: &str) -> Field {
         self.new_primitive_field(name, PrimitiveType::Boolean)
     }
 
-    pub fn new_double_field(&self, name: &str) -> SchemaField {
+    pub fn new_double_field(&self, name: &str) -> Field {
         self.new_primitive_field(name, PrimitiveType::Double)
     }
 
-    pub fn new_list_field(&self, name: &str, subtype: SchemaType) -> SchemaField {
-        SchemaField::new(
+    pub fn new_list_field(&self, name: &str, subtype: SchemaType) -> Field {
+        Field::new(
             self.next_field_id(),
             name,
             false,
@@ -767,8 +764,8 @@ impl SchemaBuilder {
         key_type: SchemaType,
         value_type: SchemaType,
         value_required: bool
-    ) -> SchemaField {
-        SchemaField::new(
+    ) -> Field {
+        Field::new(
             self.next_field_id(),
             name,
             false,
@@ -782,8 +779,8 @@ impl SchemaBuilder {
         )
     }
 
-    pub fn new_struct_field(&self, name: &str, subfields: Vec<SchemaField>) -> SchemaField {
-        SchemaField::new(
+    pub fn new_struct_field(&self, name: &str, subfields: Vec<Field>) -> Field {
+        Field::new(
             self.next_field_id(),
             name,
             false,
@@ -802,19 +799,19 @@ mod tests {
 
     fn create_schema(schema_id: i32) -> Schema {
         Schema::new(schema_id, vec![
-            SchemaField::new(
+            Field::new(
                 1,
                 "id",
                 true,
                 SchemaType::Primitive(PrimitiveType::Long)
             ),
-            SchemaField::new(
+            Field::new(
                 2,
                 "ts",
                 false,
                 SchemaType::Primitive(PrimitiveType::Timestamp)
             ),
-            SchemaField::new(
+            Field::new(
                 3,
                 "users",
                 false,
@@ -822,13 +819,13 @@ mod tests {
                     4,
                     false,
                     SchemaType::Struct(StructType::new(vec![
-                        StructField::new(
+                        Field::new(
                             5,
                             "first_name",
                             true,
                             SchemaType::Primitive(PrimitiveType::String)
                         ),
-                        StructField::new(
+                        Field::new(
                             6,
                             "last_name",
                             true,
@@ -837,7 +834,7 @@ mod tests {
                     ]))
                 ))
             ),
-            SchemaField::new(
+            Field::new(
                 7,
                 "props",
                 false,
@@ -1009,7 +1006,7 @@ mod tests {
 
     #[test]
     fn fresh_ids() {
-        let field = StructField::new(
+        let field = Field::new(
             1,
             "users",
             false,
@@ -1017,13 +1014,13 @@ mod tests {
                 2,
                 false,
                 SchemaType::Struct(StructType::new(vec![
-                    StructField::new(
+                    Field::new(
                         3,
                         "first_name",
                         true,
                         SchemaType::Primitive(PrimitiveType::String)
                     ),
-                    StructField::new(
+                    Field::new(
                         4,
                         "last_name",
                         true,

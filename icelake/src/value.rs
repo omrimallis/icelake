@@ -10,7 +10,7 @@ use serde::{Serialize, Deserialize};
 
 use crate::{IcebergResult, IcebergError};
 use crate::schema::{
-    SchemaType, StructField, PrimitiveType, StructType, ListType
+    SchemaType, Field, PrimitiveType, StructType, ListType
 };
 
 /// Represents any valid Iceberg field value.
@@ -115,9 +115,9 @@ impl Value {
             },
             Value::Binary(_) => Ok(SchemaType::Primitive(PrimitiveType::Binary)),
             Value::Struct(fields) => {
-                let nested_fields: IcebergResult<Vec<StructField>> = fields.iter()
+                let nested_fields: IcebergResult<Vec<Field>> = fields.iter()
                     .map(|(name, value)| {
-                        Ok(StructField::new(
+                        Ok(Field::new(
                             0,
                             name,
                             false,

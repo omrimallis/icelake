@@ -1,7 +1,7 @@
 //! Iceberg table schema implementation.
 //!
 //! This module provides [`Schema`] which represents the schema of an Iceberg table. Each
-//! schema has a `schema_id` and a vector of fields represented by [`SchemaField`].
+//! schema has a `schema_id` and a vector of fields represented by [`Field`].
 //!
 //! In an Iceberg schema, each field has an associated type, represented in this module
 //! by [`SchemaType`]. The schema can be highly complex with nested fields such as
@@ -15,17 +15,17 @@
 //! Create a simple schema made of primitive types:
 //!
 //! ```rust
-//! use icelake::schema::{Schema, SchemaField, SchemaType, PrimitiveType};
+//! use icelake::schema::{Schema, Field, SchemaType, PrimitiveType};
 //!
 //! let schema_id = 0;
 //! let schema = Schema::new(schema_id, vec![
-//!     SchemaField::new(
+//!     Field::new(
 //!         0,
 //!         "id",
 //!         true,
 //!         SchemaType::Primitive(PrimitiveType::Long)
 //!     ),
-//!     SchemaField::new(
+//!     Field::new(
 //!         1,
 //!         "ts",
 //!         false,
@@ -40,23 +40,22 @@
 //! An example of using a struct field for storing two nested string fields:
 //!
 //! ```rust
-//! use icelake::schema::{Schema, SchemaField, SchemaType, PrimitiveType};
-//! use icelake::schema::{StructType, StructField};
+//! use icelake::schema::{Schema, Field, SchemaType, StructType, PrimitiveType};
 //!
 //! let schema_id = 0;
 //! let schema = Schema::new(schema_id, vec![
-//!     SchemaField::new(
+//!     Field::new(
 //!         0,
 //!         "user",
 //!         false,
 //!         SchemaType::Struct(StructType::new(vec![
-//!             StructField::new(
+//!             Field::new(
 //!                 1,
 //!                 "first_name",
 //!                 true,
 //!                 SchemaType::Primitive(PrimitiveType::String)
 //!             ),
-//!             StructField::new(
+//!             Field::new(
 //!                 2,
 //!                 "last_name",
 //!                 true,
@@ -71,7 +70,7 @@ mod update;
 pub mod arrow;
 
 pub use self::schema::{
-    Schema, SchemaBuilder, SchemaField, StructField,
+    Schema, SchemaBuilder, Field,
     SchemaType, PrimitiveType, StructType, ListType, MapType
 };
 

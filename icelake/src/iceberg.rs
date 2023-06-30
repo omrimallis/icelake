@@ -749,23 +749,23 @@ impl IcebergFile {
 #[cfg(test)]
 mod tests {
     use crate::IcebergTableMetadata;
-    use crate::schema::{Schema, SchemaField, SchemaType, PrimitiveType};
+    use crate::schema::{Schema, Field, SchemaType, PrimitiveType};
 
     fn create_schema(schema_id: i32) -> Schema {
         Schema::new(schema_id, vec![
-            SchemaField::new(
+            Field::new(
                 0,
                 "id",
                 true,
                 SchemaType::Primitive(PrimitiveType::Long)
             ),
-            SchemaField::new(
+            Field::new(
                 1,
                 "ts",
                 false,
                 SchemaType::Primitive(PrimitiveType::Timestamp)
             ),
-            SchemaField::new(
+            Field::new(
                 1,
                 "user_id",
                 false,

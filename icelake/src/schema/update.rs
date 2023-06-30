@@ -3,17 +3,17 @@
 use std::collections::HashMap;
 
 use crate::{IcebergResult, IcebergError};
-use crate::schema::{Schema, SchemaType, StructField, PrimitiveType};
+use crate::schema::{Schema, SchemaType, Field, PrimitiveType};
 
 /// A set of actions that update a schema according to Iceberg schema evolution rules.
 pub struct SchemaUpdate {
     /// Map of parent field ids to their respective new child fields.
     /// key=-1 indicates top-level field.
-    adds: Option<HashMap<i32, Vec<StructField>>>,
+    adds: Option<HashMap<i32, Vec<Field>>>,
     /// List of field ids to be deleted.
     deletes: Option<Vec<i32>>,
     /// Map of field ids that are updated, with their new content.
-    updates: Option<HashMap<i32, StructField>>,
+    updates: Option<HashMap<i32, Field>>,
 }
 
 impl SchemaUpdate {
@@ -51,9 +51,9 @@ impl SchemaUpdate {
     }
 
     fn promote_field_type(
-        base: &StructField,
-        target: &StructField
-    ) -> IcebergResult<Option<StructField>> {
+        base: &Field,
+        target: &Field
+    ) -> IcebergResult<Option<Field>> {
         match base.schema_type() {
             SchemaType::Primitive(pb) => {
                 match target.schema_type() {
@@ -125,8 +125,8 @@ impl SchemaUpdate {
 
     fn between_fields(
         parent_id: i32,
-        base: &StructField,
-        target: &StructField,
+        base: &Field,
+        target: &Field,
     ) -> IcebergResult<Self> {
         // Check if the field's type has been promoted (e.g. int -> long),
         // or if one of its properties has changed.
@@ -193,15 +193,15 @@ impl SchemaUpdate {
 
     fn between_field_lists(
         parent_id: i32,
-        base: &[StructField],
-        target: &[StructField]
+        base: &[Field],
+        target: &[Field]
     ) -> IcebergResult<Self> {
-        let base_fields: HashMap<i32, &StructField> = base
+        let base_fields: HashMap<i32, &Field> = base
             .iter()
             .map(|field| (field.id, field))
             .collect();
 
-        let target_fields: HashMap<i32, &StructField> = target
+        let target_fields: HashMap<i32, &Field> = target
             .iter()
             .map(|field| (field.id, field))
             .collect();
@@ -231,7 +231,7 @@ impl SchemaUpdate {
                     Some(field.clone())
                 }
             })
-            .collect::<Vec<StructField>>();
+            .collect::<Vec<Field>>();
 
         let adds = if adds.is_empty() {
             None
@@ -312,12 +312,12 @@ mod tests {
     #[test]
     fn between_add_field() {
         let base = Schema::new(0, vec![
-            StructField::new_primitive(1, "id", true, PrimitiveType::Long)
+            Field::new_primitive(1, "id", true, PrimitiveType::Long)
         ]);
 
         let target = Schema::new(0, vec![
-            StructField::new_primitive(1, "id", true, PrimitiveType::Long),
-            StructField::new_primitive(2, "ts", false, PrimitiveType::Timestamp)
+            Field::new_primitive(1, "id", true, PrimitiveType::Long),
+            Field::new_primitive(2, "ts", false, PrimitiveType::Timestamp)
         ]);
 
         let schema_update = SchemaUpdate::between(&base, &target).unwrap();
@@ -326,7 +326,7 @@ mod tests {
         assert_eq!(
             schema_update.adds.unwrap().get(&-1).unwrap(),
             &vec![
-                StructField::new_primitive(2, "ts", false, PrimitiveType::Timestamp)
+                Field::new_primitive(2, "ts", false, PrimitiveType::Timestamp)
             ]
         );
     }
@@ -335,17 +335,17 @@ mod tests {
     #[test]
     fn between_nested_add_field() {
         let base = Schema::new(0, vec![
-            StructField::new_struct(1, "name", true, vec![
-                StructField::new_primitive(2, "first", false, PrimitiveType::String)
+            Field::new_struct(1, "name", true, vec![
+                Field::new_primitive(2, "first", false, PrimitiveType::String)
             ])
         ]);
 
         let target = Schema::new(0, vec![
-            StructField::new_struct(1, "name", true, vec![
-                StructField::new_primitive(2, "first", false, PrimitiveType::String),
-                StructField::new_primitive(3, "last", false, PrimitiveType::String)
+            Field::new_struct(1, "name", true, vec![
+                Field::new_primitive(2, "first", false, PrimitiveType::String),
+                Field::new_primitive(3, "last", false, PrimitiveType::String)
             ]),
-            StructField::new_primitive(4, "ts", false, PrimitiveType::Timestamp)
+            Field::new_primitive(4, "ts", false, PrimitiveType::Timestamp)
         ]);
 
         let schema_update = SchemaUpdate::between(&base, &target).unwrap();
@@ -354,13 +354,13 @@ mod tests {
         assert_eq!(
             schema_update.adds.as_ref().unwrap().get(&-1).unwrap(),
             &vec![
-                StructField::new_primitive(4, "ts", false, PrimitiveType::Timestamp)
+                Field::new_primitive(4, "ts", false, PrimitiveType::Timestamp)
             ]
         );
         assert_eq!(
             schema_update.adds.as_ref().unwrap().get(&1).unwrap(),
             &vec![
-                StructField::new_primitive(3, "last", false, PrimitiveType::String)
+                Field::new_primitive(3, "last", false, PrimitiveType::String)
             ]
         );
     }
@@ -369,11 +369,11 @@ mod tests {
     #[test]
     fn between_field_rename() {
         let base = Schema::new(0, vec![
-            StructField::new_primitive(1, "id", false, PrimitiveType::Long)
+            Field::new_primitive(1, "id", false, PrimitiveType::Long)
         ]);
 
         let target = Schema::new(0, vec![
-            StructField::new_primitive(1, "user_id", false, PrimitiveType::Long)
+            Field::new_primitive(1, "user_id", false, PrimitiveType::Long)
         ]);
 
         let schema_update = SchemaUpdate::between(&base, &target).unwrap();
@@ -381,7 +381,7 @@ mod tests {
         assert!(schema_update.adds.is_none());
         assert_eq!(
             schema_update.updates.as_ref().unwrap().get(&1).unwrap(),
-            &StructField::new_primitive(1, "user_id", false, PrimitiveType::Long)
+            &Field::new_primitive(1, "user_id", false, PrimitiveType::Long)
         );
     }
 
@@ -389,12 +389,12 @@ mod tests {
     #[test]
     fn between_field_removed() {
         let base = Schema::new(0, vec![
-            StructField::new_primitive(1, "id", false, PrimitiveType::Long),
-            StructField::new_primitive(2, "ts", false, PrimitiveType::Timestamp),
+            Field::new_primitive(1, "id", false, PrimitiveType::Long),
+            Field::new_primitive(2, "ts", false, PrimitiveType::Timestamp),
         ]);
 
         let target = Schema::new(0, vec![
-            StructField::new_primitive(1, "id", false, PrimitiveType::Long),
+            Field::new_primitive(1, "id", false, PrimitiveType::Long),
         ]);
 
         let schema_update = SchemaUpdate::between(&base, &target).unwrap();
@@ -412,10 +412,10 @@ mod tests {
     #[test]
     fn between_field_promoted() {
         let base = Schema::new(0, vec![
-            StructField::new_primitive(1, "id", false, PrimitiveType::Int),
+            Field::new_primitive(1, "id", false, PrimitiveType::Int),
         ]);
         let target = Schema::new(0, vec![
-            StructField::new_primitive(1, "id", false, PrimitiveType::Long),
+            Field::new_primitive(1, "id", false, PrimitiveType::Long),
         ]);
 
         let schema_update = SchemaUpdate::between(&base, &target).unwrap();
@@ -423,7 +423,7 @@ mod tests {
         assert!(schema_update.deletes.is_none());
         assert_eq!(
             schema_update.updates.as_ref().unwrap().get(&1).unwrap(),
-            &StructField::new_primitive(1, "id", false, PrimitiveType::Long)
+            &Field::new_primitive(1, "id", false, PrimitiveType::Long)
         );
     }
 
@@ -431,10 +431,10 @@ mod tests {
     #[test]
     fn between_field_promoted_illegaly() {
         let base = Schema::new(0, vec![
-            StructField::new_primitive(1, "id", false, PrimitiveType::Long),
+            Field::new_primitive(1, "id", false, PrimitiveType::Long),
         ]);
         let target = Schema::new(0, vec![
-            StructField::new_primitive(1, "id", false, PrimitiveType::Int),
+            Field::new_primitive(1, "id", false, PrimitiveType::Int),
         ]);
 
         assert!(matches!(
@@ -447,13 +447,13 @@ mod tests {
     #[test]
     fn between_nested_field_promoted_illegaly() {
         let base = Schema::new(0, vec![
-            StructField::new_list(1, "items", true,
-                StructField::new_primitive(2, "element", true, PrimitiveType::String)
+            Field::new_list(1, "items", true,
+                Field::new_primitive(2, "element", true, PrimitiveType::String)
             )
         ]);
         let target = Schema::new(0, vec![
-            StructField::new_list(1, "items", true,
-                StructField::new_primitive(2, "element", true, PrimitiveType::Int)
+            Field::new_list(1, "items", true,
+                Field::new_primitive(2, "element", true, PrimitiveType::Int)
             )
         ]);
 
