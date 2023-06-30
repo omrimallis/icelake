@@ -1,71 +1,5 @@
-//! Iceberg table schema implementation.
-//!
-//! This module provides [`Schema`] which represents the schema of an Iceberg table. Each
-//! schema has a `schema_id` and a vector of fields represented by [`SchemaField`].
-//!
-//! In an Iceberg schema, each field has an associated type, represented in this module
-//! by [`SchemaType`]. The schema can be highly complex with nested fields such as
-//! [`SchemaType::Struct`].
-//!
-//! Each top-level and nested field has an associated id. Care must be taken to ensure
-//! that field ids are unique in the schema and consistent when evolving schemas.
-//!
-//! ## Creating a simple schema
-//!
-//! Create a simple schema made of primitive types:
-//!
-//! ```rust
-//! use icelake::schema::{Schema, SchemaField, SchemaType, PrimitiveType};
-//!
-//! let schema_id = 0;
-//! let schema = Schema::new(schema_id, vec![
-//!     SchemaField::new(
-//!         0,
-//!         "id",
-//!         true,
-//!         SchemaType::Primitive(PrimitiveType::Long)
-//!     ),
-//!     SchemaField::new(
-//!         1,
-//!         "ts",
-//!         false,
-//!         SchemaType::Primitive(PrimitiveType::Timestamp)
-//!     )
-//! ]);
-//! ```
-//!
-//! ## Creating a schema with nested types
-//!
-//! Iceberg provides structs, lists and maps for creating complex nested fields.
-//! An example of using a struct field for storing two nested string fields:
-//!
-//! ```rust
-//! use icelake::schema::{Schema, SchemaField, SchemaType, PrimitiveType};
-//! use icelake::schema::{StructType, StructField};
-//!
-//! let schema_id = 0;
-//! let schema = Schema::new(schema_id, vec![
-//!     SchemaField::new(
-//!         0,
-//!         "user",
-//!         false,
-//!         SchemaType::Struct(StructType::new(vec![
-//!             StructField::new(
-//!                 1,
-//!                 "first_name",
-//!                 true,
-//!                 SchemaType::Primitive(PrimitiveType::String)
-//!             ),
-//!             StructField::new(
-//!                 2,
-//!                 "last_name",
-//!                 true,
-//!                 SchemaType::Primitive(PrimitiveType::String)
-//!             )
-//!         ]))
-//!     )
-//! ]);
-//! ```
+//! Implementation of Iceberg data types and schemas.
+
 use std::cell::RefCell;
 use std::borrow::Cow;
 
@@ -116,6 +50,29 @@ pub enum PrimitiveType {
     /// Arbitrary-length byte array.
     Binary,
 }
+
+impl std::fmt::Display for PrimitiveType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PrimitiveType::Boolean => write!(f, "bool"),
+            PrimitiveType::Int => write!(f, "int"),
+            PrimitiveType::Long => write!(f, "long"),
+            PrimitiveType::Float => write!(f, "float"),
+            PrimitiveType::Double => write!(f, "double"),
+            PrimitiveType::Decimal { precision: p, scale: s } =>
+                write!(f, "decimal({},{})", p, s),
+            PrimitiveType::Date => write!(f, "date"),
+            PrimitiveType::Time => write!(f, "time"),
+            PrimitiveType::Timestamp => write!(f, "timestamp"),
+            PrimitiveType::Timestamptz => write!(f, "timestamptz"),
+            PrimitiveType::String => write!(f, "string"),
+            PrimitiveType::Uuid => write!(f, "uuid"),
+            PrimitiveType::Fixed(size) => write!(f, "fixed[{}]", size),
+            PrimitiveType::Binary => write!(f, "binary"),
+        }
+    }
+}
+
 
 /// Serialize for PrimitiveType with special handling for
 /// Decimal and Fixed types.
@@ -234,6 +191,10 @@ impl StructType {
         let tag = Cow::Borrowed(STRUCT_TAG);
         Self { r#type: tag, fields: fields }
     }
+
+    pub fn fields(&self) -> &[StructField] {
+        &self.fields
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -269,6 +230,88 @@ impl StructField {
         }
     }
 
+    /// Creates a new `StructField` with type [`SchemaType::Primitive`]
+    pub fn new_primitive(
+        id: i32,
+        name: &str,
+        required: bool,
+        primitive: PrimitiveType
+    ) -> Self {
+        Self::new(
+            id, name, required, SchemaType::Primitive(primitive)
+        )
+    }
+
+    /// Creates a new `StructField` with type [`SchemaType::Struct`]
+    pub fn new_struct(
+        id: i32,
+        name: &str,
+        required: bool,
+        fields: impl IntoIterator<Item = StructField>
+    ) -> Self {
+        Self::new(
+            id, name, required,
+            SchemaType::Struct(StructType::new(Vec::from_iter(fields)))
+        )
+    }
+
+    /// Creates a new `StructField` with type [`SchemaType::List`]
+    pub fn new_list(
+        id: i32,
+        name: &str,
+        required: bool,
+        field: StructField,
+    ) -> Self {
+        Self::new(
+            id, name, required,
+            SchemaType::List(ListType::new(
+                field.id,
+                field.required,
+                field.r#type
+            ))
+        )
+    }
+
+    /// Creates a new `StructField` with type [`SchemaType::Map`]
+    pub fn new_map(
+        id: i32,
+        name: &str,
+        required: bool,
+        key: StructField,
+        value: StructField,
+    ) -> Self {
+        Self::new(
+            id, name, required,
+            SchemaType::Map(MapType::new(
+                key.id,
+                key.r#type,
+                value.id,
+                value.required,
+                value.r#type
+            ))
+        )
+    }
+
+    pub fn id(&self) -> i32 {
+        self.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn required(&self) -> bool {
+        self.required
+    }
+
+    pub fn doc(&self) -> Option<&str> {
+        self.doc.as_ref().map(|x| x.as_str())
+    }
+
+    pub fn schema_type(&self) -> &SchemaType {
+        &self.r#type
+    }
+
     pub fn with_required(mut self, required: bool) -> Self {
         self.required = required;
         self
@@ -278,36 +321,112 @@ impl StructField {
         self.doc = Some(doc);
         self
     }
-}
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
-#[serde(rename_all = "kebab-case")]
-/// A field type that represents a list of identical elements.
-pub struct ListType {
-    /// Always set to "list".
-    pub r#type: Cow<'static, str>,
-    /// Unique identifier for the element
-    pub element_id: i32,
-    /// If the element is mandatory.
-    pub element_required: bool,
-    /// The type of the element.
-    pub element: Box<SchemaType>,
-}
+    /// Assigns new ids from the `next_id` function to this field and all
+    /// recursively nested fields.
+    pub fn with_fresh_ids<F>(mut self, next_id: &mut F) -> Self
+    where
+        F: FnMut() -> i32
+    {
+        self.id = next_id();
+        self.r#type = self.r#type.with_fresh_ids(next_id);
+        self
+    }
 
-impl ListType {
-    pub fn new(element_id: i32, element_required: bool, element: SchemaType) -> Self {
-        let tag = Cow::Borrowed(LIST_TAG);
-        Self {
-            r#type: tag,
-            element_id: element_id,
-            element_required: element_required,
-            element: Box::new(element)
+    /// Returns an iterator on all recursively nested fields inside this field,
+    /// including `self`.
+    pub fn all_fields(&self) -> Box<dyn Iterator<Item = &Self> + '_> {
+        let iterator = std::iter::once(self);
+
+        match self.schema_type() {
+            SchemaType::Primitive(_) => {
+                Box::new(iterator)
+            },
+            SchemaType::Struct(s) => {
+                Box::new(iterator.chain(
+                    s.fields()
+                        .iter()
+                        .flat_map(|field| field.all_fields())
+                ))
+            },
+            SchemaType::List(l) => {
+                Box::new(iterator.chain(
+                    l.field().all_fields()
+                ))
+            },
+            SchemaType::Map(m) => {
+                Box::new(iterator.chain(
+                    m.key().all_fields()
+                ).chain(
+                    m.value().all_fields()
+                ))
+            }
         }
     }
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[serde(from = "ListTypeModel", into = "ListTypeModel")]
+/// A field type that represents a list of identical elements.
+pub struct ListType {
+    field: Box<StructField>
+}
+
+impl ListType {
+    pub fn new(element_id: i32, element_required: bool, element: SchemaType) -> Self {
+        Self {
+            field: Box::new(StructField::new(
+                element_id,
+                "element",
+                element_required,
+                element
+            ))
+        }
+    }
+
+    /// Returns a reference to the nested field element
+    pub fn field(&self) -> &StructField {
+        &self.field
+    }
+}
+
+/// Serializable `ListType`
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 #[serde(rename_all = "kebab-case")]
+struct ListTypeModel {
+    /// Always set to "list".
+    r#type: Cow<'static, str>,
+    /// Unique identifier for the element
+    element_id: i32,
+    /// If the element is mandatory.
+    element_required: bool,
+    /// The type of the element.
+    element: SchemaType,
+}
+
+impl From<ListType> for ListTypeModel {
+    fn from(l: ListType) -> Self {
+        Self {
+            r#type: Cow::Borrowed(LIST_TAG),
+            element_id: l.field.id,
+            element_required: l.field.required,
+            element: l.field.r#type
+        }
+    }
+}
+
+impl From<ListTypeModel> for ListType {
+    fn from(l: ListTypeModel) -> Self {
+        Self::new(
+            l.element_id,
+            l.element_required,
+            l.element
+        )
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[serde(from = "MapTypeModel", into = "MapTypeModel")]
 /// A complex field type that contains key-value pairs.
 ///
 /// A map is a collection of key-value pairs with a key type and a value type.
@@ -316,37 +435,77 @@ impl ListType {
 /// optional or required. Both map keys and map values may be any type,
 /// including nested types.
 pub struct MapType {
-    /// Always set to "map".
-    pub r#type: Cow<'static, str>,
-    /// Unique key field id
-    pub key_id: i32,
-    /// Type of the map key
-    pub key: Box<SchemaType>,
-    /// Unique key for the value id
-    pub value_id: i32,
-    /// Indicates if the value is required.
-    pub value_required: bool,
-    /// Type of the value.
-    pub value: Box<SchemaType>,
+    key: Box<StructField>,
+    value: Box<StructField>,
 }
 
 impl MapType {
     pub fn new(
         key_id: i32,
-        key: SchemaType,
+        key_type: SchemaType,
         value_id: i32,
         value_required: bool,
-        value: SchemaType
+        value_type: SchemaType
     ) -> Self {
-        let tag = Cow::Borrowed(MAP_TAG);
         Self {
-            r#type: tag,
-            key_id: key_id,
-            key: Box::new(key),
-            value_id: value_id,
-            value_required: value_required,
-            value: Box::new(value),
+            key: Box::new(StructField::new(
+                key_id,
+                "key",
+                true,
+                key_type
+            )),
+            value: Box::new(StructField::new(
+                value_id,
+                "value",
+                value_required,
+                value_type
+            ))
         }
+    }
+
+    pub fn key(&self) -> &StructField {
+        &self.key
+    }
+
+    pub fn value(&self) -> &StructField {
+        &self.value
+    }
+}
+
+/// Serializable `MapType`
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[serde(rename_all = "kebab-case")]
+struct MapTypeModel {
+    /// Always set to "map".
+    r#type: Cow<'static, str>,
+    /// Unique key field id
+    key_id: i32,
+    /// Type of the map key
+    key: SchemaType,
+    /// Unique key for the value id
+    value_id: i32,
+    /// Indicates if the value is required.
+    value_required: bool,
+    /// Type of the value.
+    value: SchemaType,
+}
+
+impl From<MapType> for MapTypeModel {
+    fn from(m: MapType) -> Self {
+        Self {
+            r#type: Cow::Borrowed(MAP_TAG),
+            key_id: m.key.id,
+            key: m.key.r#type,
+            value_id: m.value.id,
+            value_required: m.value.required,
+            value: m.value.r#type
+        }
+    }
+}
+
+impl From<MapTypeModel> for MapType {
+    fn from(m: MapTypeModel) -> Self {
+        Self::new(m.key_id, m.key, m.value_id, m.value_required, m.value)
     }
 }
 
@@ -365,40 +524,58 @@ pub enum SchemaType {
 }
 
 impl SchemaType {
-    /// Obtains the maximal id of all recursively-nested fields inside this type,
-    /// or `None` if this type is primitive.
-    pub fn max_nested_field_id(&self) -> Option<i32> {
-        match &self {
-            // Primitive types don't have nested fields.
-            SchemaType::Primitive(_) => None,
+    pub fn is_primitive(&self) -> bool {
+        matches!(self, Self::Primitive(_))
+    }
+
+    pub fn is_struct(&self) -> bool {
+        matches!(self, Self::Struct(_))
+    }
+
+    pub fn is_list(&self) -> bool {
+        matches!(self, Self::List(_))
+    }
+
+    pub fn is_map(&self) -> bool {
+        matches!(self, Self::Map(_))
+    }
+
+    /// Assigns new ids from the `next_id` function to this field and all
+    /// recursively nested fields.
+    ///
+    /// Do not use directly. Use `StructField::with_fresh_ids()` instead.
+    fn with_fresh_ids<F>(self, next_id: &mut F) -> Self
+    where
+        F: FnMut() -> i32
+    {
+        match self {
+            SchemaType::Primitive(p) => {
+                SchemaType::Primitive(p)
+            },
             SchemaType::Struct(s) => {
-                s.fields.iter().map(|field| -> i32 {
-                    // Call recursively on nested fields.
-                    if let Some(max_nested_id) = field.r#type.max_nested_field_id() {
-                        std::cmp::max(field.id, max_nested_id)
-                    } else {
-                        field.id
-                    }
-                }).max()
+                SchemaType::Struct(StructType::new(
+                    s.fields
+                        .into_iter()
+                        .map(|field| field.with_fresh_ids(next_id))
+                        .collect()
+                ))
             },
             SchemaType::List(l) => {
-                let mut max = l.element_id;
-                if let Some(max_nested_id) = l.element.max_nested_field_id() {
-                    max = std::cmp::max(max, max_nested_id)
-                }
-                Some(max)
+                SchemaType::List(ListType::new(
+                    next_id(),
+                    l.field.required,
+                    l.field.r#type.with_fresh_ids(next_id)
+                ))
             },
             SchemaType::Map(m) => {
-                let mut max = std::cmp::max(m.key_id, m.value_id);
-                // Call recursively on nested key and value types.
-                if let Some(max_nested_id) = m.key.max_nested_field_id() {
-                    max = std::cmp::max(max, max_nested_id);
-                }
-                if let Some(max_nested_id) = m.value.max_nested_field_id() {
-                    max = std::cmp::max(max, max_nested_id);
-                }
-                Some(max)
-            }
+                SchemaType::Map(MapType::new(
+                    next_id(),
+                    m.key.r#type.with_fresh_ids(next_id),
+                    next_id(),
+                    m.value.required,
+                    m.value.r#type.with_fresh_ids(next_id)
+                ))
+            },
         }
     }
 }
@@ -419,7 +596,7 @@ pub struct Schema {
     #[serde(skip_serializing_if = "Option::is_none")]
     identifier_field_ids: Option<Vec<u32>>,
     /// Actual fields, embedded as a Struct object as per the Iceberg spec.
-    /// Must be of variant SchemaType::Struct
+    /// Must be of variant `SchemaType::Struct`
     #[serde(flatten)]
     schema: SchemaType,
 }
@@ -442,25 +619,41 @@ impl Schema {
     pub fn id(&self) -> i32 { self.schema_id }
 
     pub fn max_field_id(&self) -> i32 {
-        self.schema.max_nested_field_id().unwrap()
+        self.all_fields().max_by_key(|f| f.id()).unwrap().id()
     }
 
-    pub fn fields(&self) -> &[SchemaField] {
+    fn struct_type(&self) -> &StructType {
         match &self.schema {
-            SchemaType::Struct(s) => &s.fields,
+            SchemaType::Struct(s) => s,
             _ => panic!("unexpected schema type")
         }
     }
 
+    /// Returns a shared slice of the top-level fields in the schema.
+    pub fn fields(&self) -> &[SchemaField] {
+        &self.struct_type().fields
+    }
+
+    /// Returns an iterator on all recursively nested fields in the schema in a
+    /// depth-first order.
+    ///
+    /// A reference is returned for each primitive field,
+    /// list element, nested struct field and map key value element.
+    pub fn all_fields(&self) -> impl Iterator<Item = &StructField> {
+        self.struct_type().fields.iter()
+            .flat_map(|field| field.all_fields())
+    }
+
+    /// Finds a top-level schema field by its name.
     pub fn get_field_by_name(&self, name: &str) -> Option<&SchemaField> {
         self.fields().iter()
             .find(|field| field.name == name)
     }
 
     pub fn encode(&self) -> IcebergResult<String> {
-        serde_json::to_string(self).map_err(
-            |e| IcebergError::SerializeSchemaJson { source: e }
-        )
+        serde_json::to_string(self).map_err(|e| IcebergError::SchemaError {
+            message: format!("error serializing table schema to json: {e}")
+        })
     }
 }
 
@@ -600,5 +793,262 @@ impl SchemaBuilder {
 
     pub fn build(&mut self) -> Schema {
         Schema::new(self.schema_id, std::mem::take(&mut self.fields))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_schema(schema_id: i32) -> Schema {
+        Schema::new(schema_id, vec![
+            SchemaField::new(
+                1,
+                "id",
+                true,
+                SchemaType::Primitive(PrimitiveType::Long)
+            ),
+            SchemaField::new(
+                2,
+                "ts",
+                false,
+                SchemaType::Primitive(PrimitiveType::Timestamp)
+            ),
+            SchemaField::new(
+                3,
+                "users",
+                false,
+                SchemaType::List(ListType::new(
+                    4,
+                    false,
+                    SchemaType::Struct(StructType::new(vec![
+                        StructField::new(
+                            5,
+                            "first_name",
+                            true,
+                            SchemaType::Primitive(PrimitiveType::String)
+                        ),
+                        StructField::new(
+                            6,
+                            "last_name",
+                            true,
+                            SchemaType::Primitive(PrimitiveType::String)
+                        )
+                    ]))
+                ))
+            ),
+            SchemaField::new(
+                7,
+                "props",
+                false,
+                SchemaType::Map(MapType::new(
+                    8,
+                    SchemaType::Primitive(PrimitiveType::String),
+                    9,
+                    false,
+                    SchemaType::Primitive(PrimitiveType::Double)
+                ))
+            )
+        ])
+    }
+
+    #[test]
+    fn serialize_to_json() {
+        let schema = create_schema(0);
+
+        let expected = serde_json::json!({
+            "schema-id": 0,
+            "type": "struct",
+            "fields": [
+                {
+                    "id": 1,
+                    "name": "id",
+                    "required": true,
+                    "type": "long"
+                },
+                {
+                    "id": 2,
+                    "name": "ts",
+                    "required": false,
+                    "type": "timestamp"
+                },
+                {
+                    "id": 3,
+                    "name": "users",
+                    "required": false,
+                    "type": {
+                        "type": "list",
+                        "element-id": 4,
+                        "element-required": false,
+                        "element": {
+                            "type": "struct",
+                            "fields": [
+                                {
+                                    "id": 5,
+                                    "name": "first_name",
+                                    "required": true,
+                                    "type": "string"
+                                },
+                                {
+                                    "id": 6,
+                                    "name": "last_name",
+                                    "required": true,
+                                    "type": "string"
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "id": 7,
+                    "name": "props",
+                    "required": false,
+                    "type": {
+                        "type": "map",
+                        "key-id": 8,
+                        "key": "string",
+                        "value-id": 9,
+                        "value-required": false,
+                        "value": "double"
+                    }
+                }
+            ]
+        });
+
+        assert_eq!(serde_json::to_value(schema).unwrap(), expected);
+    }
+
+    #[test]
+    fn deserialize_from_json() {
+        let schema = serde_json::from_value::<Schema>(serde_json::json!({
+            "schema-id": 0,
+            "type": "struct",
+            "fields": [
+                {
+                    "id": 1,
+                    "name": "id",
+                    "required": true,
+                    "type": "long"
+                },
+                {
+                    "id": 2,
+                    "name": "ts",
+                    "required": false,
+                    "type": "timestamp"
+                },
+                {
+                    "id": 3,
+                    "name": "users",
+                    "required": false,
+                    "type": {
+                        "type": "list",
+                        "element-id": 4,
+                        "element-required": false,
+                        "element": {
+                            "type": "struct",
+                            "fields": [
+                                {
+                                    "id": 5,
+                                    "name": "first_name",
+                                    "required": true,
+                                    "type": "string"
+                                },
+                                {
+                                    "id": 6,
+                                    "name": "last_name",
+                                    "required": true,
+                                    "type": "string"
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "id": 7,
+                    "name": "props",
+                    "required": false,
+                    "type": {
+                        "type": "map",
+                        "key-id": 8,
+                        "key": "string",
+                        "value-id": 9,
+                        "value-required": false,
+                        "value": "double"
+                    }
+                }
+            ]
+        })).unwrap();
+
+        let expected = create_schema(0);
+
+        assert_eq!(schema, expected);
+    }
+
+    #[test]
+    fn max_field_id() {
+        assert_eq!(create_schema(0).max_field_id(), 9)
+    }
+
+    #[test]
+    fn all_fields() {
+        let schema = create_schema(0);
+        let all_fields = schema.all_fields().collect::<Vec<_>>();
+
+        assert_eq!(all_fields[0].id(), 1);
+        assert_eq!(all_fields[0].name(), "id");
+        assert!(matches!(all_fields[0].schema_type(), SchemaType::Primitive(_)));
+
+        assert_eq!(all_fields[3].id(), 4);
+        assert_eq!(all_fields[3].name(), "element");
+        assert!(matches!(all_fields[3].schema_type(), SchemaType::Struct(_)));
+
+        assert_eq!(all_fields[4].id(), 5);
+        assert_eq!(all_fields[4].name(), "first_name");
+        assert!(matches!(all_fields[4].schema_type(), SchemaType::Primitive(_)));
+    }
+
+    #[test]
+    fn fresh_ids() {
+        let field = StructField::new(
+            1,
+            "users",
+            false,
+            SchemaType::List(ListType::new(
+                2,
+                false,
+                SchemaType::Struct(StructType::new(vec![
+                    StructField::new(
+                        3,
+                        "first_name",
+                        true,
+                        SchemaType::Primitive(PrimitiveType::String)
+                    ),
+                    StructField::new(
+                        4,
+                        "last_name",
+                        true,
+                        SchemaType::Primitive(PrimitiveType::String)
+                    )
+                ]))
+            ))
+        );
+
+        let mut next_id = 10;
+        let field = field.with_fresh_ids(&mut || { next_id += 1; next_id });
+        assert_eq!(field.id, 11);
+
+        let list_type = match field.r#type {
+            SchemaType::List(l) => l,
+            _ => panic!(),
+        };
+        assert_eq!(list_type.field().id(), 12);
+
+        let struct_type = match list_type.field().schema_type() {
+            SchemaType::Struct(s) => s,
+            _ => panic!(),
+        };
+
+        assert_eq!(struct_type.fields[0].id, 13);
+        assert_eq!(struct_type.fields[1].id, 14);
     }
 }

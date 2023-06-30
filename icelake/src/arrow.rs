@@ -75,46 +75,18 @@ impl TryFrom<&SchemaType> for ArrowDataType {
             },
             SchemaType::List(list_type) => {
                 ArrowDataType::List(Arc::new(
-                    ArrowField::new(
-                        // Iceberg list fields do not have a name.
-                        // Generate one based on the field ID.
-                        format!("field_{}", list_type.element_id),
-                        (&*list_type.element).try_into()?,
-                        !list_type.element_required
-                    ).with_metadata(HashMap::from_iter([
-                        (
-                            FIELD_ID_KEY.to_string(),
-                            list_type.element_id.to_string()
-                        )
-                    ]))
+                    list_type.field().try_into()?
                 ))
             },
             SchemaType::Map(map_type) => {
+                let mut kv: Vec<ArrowField> = Vec::new();
+                kv.push(map_type.key().try_into()?);
+                kv.push(map_type.value().try_into()?);
+
                 ArrowDataType::Map(
                     Arc::new(ArrowField::new(
                         "entries",
-                        ArrowDataType::Struct(ArrowFields::from(vec![
-                            ArrowField::new(
-                                "key",
-                                (&*map_type.key).try_into()?,
-                                false
-                            ).with_metadata(HashMap::from_iter([
-                                (
-                                    FIELD_ID_KEY.to_string(),
-                                    map_type.key_id.to_string()
-                                )
-                            ])),
-                            ArrowField::new(
-                                "value",
-                                (&*map_type.value).try_into()?,
-                                !map_type.value_required
-                            ).with_metadata(HashMap::from_iter([
-                                (
-                                    FIELD_ID_KEY.to_string(),
-                                    map_type.value_id.to_string()
-                                )
-                            ]))
-                        ])),
+                        ArrowDataType::Struct(ArrowFields::from(kv)),
                         true
                     )),
                     false
@@ -378,7 +350,7 @@ mod tests {
         assert_eq!(arrow_field, new_arrow_field(
             "users",
             ArrowDataType::List(Arc::new(new_arrow_field(
-                "field_1",
+                "element",
                 ArrowDataType::Utf8,
                 true,
                 1
