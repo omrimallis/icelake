@@ -74,7 +74,6 @@ pub mod manifest;
 pub mod storage;
 pub mod transaction;
 pub mod writer;
-pub mod arrow;
 
 pub use crate::iceberg::{
     IcebergTable, IcebergTableVersion, IcebergTableMetadata,

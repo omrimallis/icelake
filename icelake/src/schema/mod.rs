@@ -68,6 +68,7 @@
 //! ```
 mod schema;
 mod update;
+pub mod arrow;
 
 pub use self::schema::{
     Schema, SchemaBuilder, SchemaField, StructField,
