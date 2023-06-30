@@ -67,8 +67,13 @@
 //! ]);
 //! ```
 mod schema;
+mod update;
 
 pub use self::schema::{
     Schema, SchemaBuilder, SchemaField, StructField,
     SchemaType, PrimitiveType, StructType, ListType, MapType
+};
+
+pub use self::update::{
+    SchemaUpdate
 };
