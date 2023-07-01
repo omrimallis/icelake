@@ -25,7 +25,7 @@ use crate::value::Value;
 use crate::transaction::AppendFilesOperation;
 use crate::partition::{PartitionSpec, PartitionValues};
 use crate::manifest::{DataFile, DataFileContent, DataFileFormat};
-use crate::arrow::iceberg_to_arrow_schema;
+use crate::schema::arrow::iceberg_to_arrow_schema;
 
 fn arrow_field_add_parquet_id(arrow_field: &ArrowFieldRef) -> ArrowFieldRef {
     let mut metadata = arrow_field.metadata().clone();

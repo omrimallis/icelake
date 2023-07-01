@@ -17,24 +17,24 @@
 //!
 //! ```rust
 //!
-//! use icelake::schema::{Schema, SchemaField, SchemaType, PrimitiveType};
+//! use icelake::schema::{Schema, Field, SchemaType, PrimitiveType};
 //! use icelake::partition::{PartitionSpec, PartitionField, PartitionTransform};
 //!
 //! let schema_id = 0;
 //! let schema = Schema::new(schema_id, vec![
-//!     SchemaField::new(
+//!     Field::new(
 //!         0,
 //!         "id",
 //!         false,
 //!         SchemaType::Primitive(PrimitiveType::Int)
 //!     ),
-//!     SchemaField::new(
+//!     Field::new(
 //!         1,
 //!         "product_id",
 //!         false,
 //!         SchemaType::Primitive(PrimitiveType::Int)
 //!     ),
-//!     SchemaField::new(
+//!     Field::new(
 //!         2,
 //!         "timestamp",
 //!         false,
@@ -58,7 +58,7 @@ use chrono::{Datelike, NaiveDate, NaiveDateTime, DateTime, Utc};
 
 use crate::{IcebergResult, IcebergError};
 use crate::schema::{
-    Schema, SchemaType, StructField,
+    Schema, SchemaType, Field,
     StructType, PrimitiveType
 };
 use crate::value::Value;
@@ -410,7 +410,7 @@ pub(crate) struct PartitionSpecModel {
 pub struct PartitionSpec {
     model: PartitionSpecModel,
     /// Lookup for schema fields by their source id.
-    field_by_id: HashMap<i32, StructField>,
+    field_by_id: HashMap<i32, Field>,
 }
 
 pub const UNPARTITIONED_LAST_ASSIGNED_FIELD_ID: i32 = 999;
@@ -511,11 +511,11 @@ impl PartitionSpec {
     }
 
     /// Builds a lookup map from the schema's primitive fields.
-    fn field_by_id(schema: Schema) -> HashMap<i32, StructField> {
+    fn field_by_id(schema: Schema) -> HashMap<i32, Field> {
         // Temporary queue of fields to be processed.
-        let mut queue: Vec<StructField> = schema.fields().into();
+        let mut queue: Vec<Field> = schema.fields().into();
         // List of valid field ids.
-        let mut lookup: HashMap<i32, StructField> = HashMap::new();
+        let mut lookup: HashMap<i32, Field> = HashMap::new();
 
         // Process recursively.
         while let Some(source_field) = queue.pop() {
@@ -559,8 +559,8 @@ impl PartitionSpec {
     /// Returns the partition fields of this spec as a `StructType` with transformations
     /// applied to the source fields in `schema`.
     ///
-    /// Each PartitionField is converted to a [`StructField`] with its name preserved,
-    /// its `field_id` becoming the `StructField`'s id and its type converted according
+    /// Each PartitionField is converted to a [`Field`] with its name preserved,
+    /// its `field_id` becoming the `Field`'s id and its type converted according
     /// to its transform.
     pub fn as_struct_type(&self) -> StructType {
         let struct_fields = self.fields()
@@ -572,7 +572,7 @@ impl PartitionSpec {
                     source_field.r#type.clone()
                 ).unwrap();
 
-                StructField::new(
+                Field::new(
                     field.field_id,
                     &field.name,
                     false,
@@ -806,7 +806,7 @@ mod tests {
 
     use crate::{IcebergError};
     use crate::schema::{
-        Schema, SchemaField, StructField,
+        Schema, Field,
         SchemaType, StructType, PrimitiveType
     };
     use crate::value::Value;
@@ -825,19 +825,19 @@ mod tests {
 
     fn create_schema() -> Schema {
         Schema::new(0, vec![
-            SchemaField::new(
+            Field::new(
                 0,
                 "id",
                 true,
                 SchemaType::Primitive(PrimitiveType::Long)
             ),
-            SchemaField::new(
+            Field::new(
                 1,
                 "user_id",
                 true,
                 SchemaType::Primitive(PrimitiveType::String)
             ),
-            SchemaField::new(
+            Field::new(
                 2,
                 "ts",
                 false,
@@ -885,7 +885,7 @@ mod tests {
     fn invalid_partition_spec_for_schema() {
         // Schema is missing the source field with id '1'
         let schema = Schema::new(0, vec![
-            SchemaField::new(
+            Field::new(
                 0,
                 "id",
                 true,
@@ -908,13 +908,13 @@ mod tests {
         assert_eq!(
             spec.as_struct_type(),
             StructType::new(vec![
-                StructField::new(
+                Field::new(
                     1000,
                     "user_id",
                     false,
                     SchemaType::Primitive(PrimitiveType::String)
                 ),
-                StructField::new(
+                Field::new(
                     1001,
                     "ts_day",
                     false,

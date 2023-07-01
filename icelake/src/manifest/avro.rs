@@ -11,7 +11,7 @@ use apache_avro::{
 use serde_json::{json, value::Value as JsonValue};
 
 use crate::{IcebergResult, IcebergError};
-use crate::schema::{StructField, SchemaType, PrimitiveType, StructType};
+use crate::schema::{Field, SchemaType, PrimitiveType, StructType};
 use crate::value::Value;
 use crate::partition::PartitionSpec;
 use super::manifest::{Manifest, ManifestEntry, ManifestEntryStatus};
@@ -46,7 +46,7 @@ impl ManifestEntrySerializer {
     ///
     /// See the Avro spec for supported types and logical types.
     /// [https://avro.apache.org/docs/1.11.1/specification/]
-    fn partition_field_avro_schema(field: &StructField) -> IcebergResult<JsonValue> {
+    fn partition_field_avro_schema(field: &Field) -> IcebergResult<JsonValue> {
         match &field.r#type {
             SchemaType::Primitive(p) => {
                 Ok(match p {
