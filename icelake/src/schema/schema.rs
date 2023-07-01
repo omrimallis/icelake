@@ -384,6 +384,10 @@ impl ListType {
         }
     }
 
+    pub fn of_field(field: Field) -> Self {
+        Self::new(field.id, field.required, field.r#type)
+    }
+
     /// Returns a reference to the nested field element
     pub fn field(&self) -> &Field {
         &self.field
