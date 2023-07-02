@@ -578,7 +578,7 @@ impl PartitionSpec {
                     false,
                     result_type
                 )
-            }).collect();
+            });
 
         StructType::new(struct_fields)
     }

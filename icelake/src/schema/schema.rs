@@ -187,9 +187,9 @@ pub struct StructType {
 }
 
 impl StructType {
-    pub fn new(fields: Vec<Field>) -> Self {
+    pub fn new(fields: impl IntoIterator<Item = Field>) -> Self {
         let tag = Cow::Borrowed(STRUCT_TAG);
-        Self { r#type: tag, fields: fields }
+        Self { r#type: tag, fields: Vec::from_iter(fields) }
     }
 
     pub fn fields(&self) -> &[Field] {
@@ -363,6 +363,45 @@ impl Field {
             }
         }
     }
+
+    /// Returns an iterator on all recursively nested fields inside this field,
+    /// including `self`, along with their full name, e.g. "list_field.element.field_a".
+    fn all_fields_by_name(
+        &self,
+        parent: Option<&str>
+    ) -> Box<dyn Iterator<Item = (String, &Self)> + '_> {
+        let full_name = parent.map(|s| format!("{}.{}", s, self.name()))
+            .unwrap_or_else(|| self.name().to_string());
+
+        let iterator = std::iter::once((full_name.clone(), self));
+
+        match self.schema_type() {
+            SchemaType::Primitive(_) => {
+                Box::new(iterator)
+            },
+            SchemaType::Struct(s) => {
+                Box::new(iterator.chain(
+                    s.fields()
+                        .iter()
+                        .flat_map(move |field|
+                            field.all_fields_by_name(Some(&full_name))
+                        )
+                ))
+            },
+            SchemaType::List(l) => {
+                Box::new(iterator.chain(
+                    l.field().all_fields_by_name(Some(&full_name))
+                ))
+            },
+            SchemaType::Map(m) => {
+                Box::new(iterator.chain(
+                    m.key().all_fields_by_name(Some(&full_name))
+                ).chain(
+                    m.value().all_fields_by_name(Some(&full_name))
+                ))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -467,6 +506,16 @@ impl MapType {
         }
     }
 
+    pub fn of_fields(key: Field, value: Field) -> Self {
+        Self::new(
+            key.id,
+            key.r#type,
+            value.id,
+            value.required,
+            value.r#type
+        )
+    }
+
     pub fn key(&self) -> &Field {
         &self.key
     }
@@ -561,7 +610,6 @@ impl SchemaType {
                     s.fields
                         .into_iter()
                         .map(|field| field.with_fresh_ids(next_id))
-                        .collect()
                 ))
             },
             SchemaType::List(l) => {
@@ -608,7 +656,7 @@ pub struct Schema {
 impl Schema {
     pub fn new(
         schema_id: i32,
-        fields: Vec<Field>
+        fields: impl IntoIterator<Item = Field>
     ) -> Self {
         Self {
             schema_id: schema_id,
@@ -643,6 +691,21 @@ impl Schema {
     pub fn all_fields(&self) -> impl Iterator<Item = &Field> {
         self.struct_type().fields.iter()
             .flat_map(|field| field.all_fields())
+    }
+
+    /// Returns an iterator on all recursively nested fields in the schema in a
+    /// depth-first order, alongside their full name.
+    pub fn all_fields_by_name(&self) -> impl Iterator<Item = (String, &Field)> {
+        self.struct_type().fields.iter()
+            .flat_map(|field| field.all_fields_by_name(None))
+    }
+
+    /// Returns an iterator on all recursively nested fields in the schema in a
+    /// depth-first order, alongside their id.
+    pub fn all_fields_by_id(&self) -> impl Iterator<Item = (i32, &Field)> {
+        self.struct_type().fields.iter()
+            .flat_map(|field| field.all_fields())
+            .map(|field| (field.id(), field))
     }
 
     /// Finds a top-level schema field by its name.
@@ -799,6 +862,8 @@ impl SchemaBuilder {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     fn create_schema(schema_id: i32) -> Schema {
@@ -1006,6 +1071,33 @@ mod tests {
         assert_eq!(all_fields[4].id(), 5);
         assert_eq!(all_fields[4].name(), "first_name");
         assert!(matches!(all_fields[4].schema_type(), SchemaType::Primitive(_)));
+    }
+
+    #[test]
+    fn all_fields_by_name() {
+        let schema = create_schema(0);
+        let all_fields: HashMap<String, &Field> = schema.all_fields_by_name().collect();
+
+        println!("{:?}", all_fields.keys());
+
+        assert_eq!(
+            **all_fields.get("id").unwrap(),
+            Field::new(
+                1,
+                "id",
+                true,
+                SchemaType::Primitive(PrimitiveType::Long)
+            )
+        );
+        assert_eq!(
+            **all_fields.get("users.element.first_name").unwrap(),
+            Field::new(
+                5,
+                "first_name",
+                true,
+                SchemaType::Primitive(PrimitiveType::String)
+            )
+        );
     }
 
     #[test]

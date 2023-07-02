@@ -66,14 +66,10 @@
 //! ]);
 //! ```
 mod schema;
-mod update;
+pub mod update;
 pub mod arrow;
 
 pub use self::schema::{
     Schema, SchemaBuilder, Field,
     SchemaType, PrimitiveType, StructType, ListType, MapType
-};
-
-pub use self::update::{
-    SchemaUpdate
 };

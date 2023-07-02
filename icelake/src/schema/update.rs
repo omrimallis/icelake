@@ -1,19 +1,67 @@
-//! Interface for performing schema evolution.
+//! Interface for performing iceberg schema evolution.
+//!
+//! # Examples
+//!
+//! Add a field to a schema.
+//!
+//! ```rust
+//! use icelake::schema::{Schema, Field};
+//! use icelake::schema::{SchemaType, PrimitiveType};
+//! use icelake::schema::update::SchemaUpdate;
+//!
+//! let schema = Schema::new(0, vec![
+//!     Field::new(1, "id", true, SchemaType::Primitive(PrimitiveType::Long))
+//! ]);
+//!
+//! let new_schema_id = 1;
+//! let new_schema = SchemaUpdate::for_schema(&schema)
+//!     .add_field(
+//!         None,
+//!         "ts",
+//!         false,
+//!         SchemaType::Primitive(PrimitiveType::Timestamp)
+//!     )
+//!     .unwrap()
+//!     .apply(new_schema_id);
+//! ```
 
 use std::collections::HashMap;
 
 use crate::{IcebergResult, IcebergError};
-use crate::schema::{Schema, SchemaType, Field, PrimitiveType};
+use crate::schema::{
+    Schema, Field,
+    SchemaType, PrimitiveType, StructType, ListType, MapType
+};
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+struct FieldUpdate {
+    name: String,
+    required: bool,
+    doc: Option<String>
+}
+
+impl FieldUpdate {
+    fn new(name: &str, required: bool, doc: Option<&str>) -> Self {
+        Self {
+            name: name.to_string(),
+            required: required,
+            doc: doc.map(|s| s.to_string()),
+        }
+    }
+}
 
 /// A set of actions that update a schema according to Iceberg schema evolution rules.
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SchemaUpdate {
     /// Map of parent field ids to their respective new child fields.
     /// key=-1 indicates top-level field.
     adds: Option<HashMap<i32, Vec<Field>>>,
     /// List of field ids to be deleted.
     deletes: Option<Vec<i32>>,
-    /// Map of field ids that are updated, with their new content.
-    updates: Option<HashMap<i32, Field>>,
+    /// Map of field ids to their new properties.
+    updates: Option<HashMap<i32, FieldUpdate>>,
+    /// Map of field ids to their new type (primitive types only).
+    promotions: Option<HashMap<i32, SchemaType>>,
 }
 
 impl SchemaUpdate {
@@ -21,8 +69,93 @@ impl SchemaUpdate {
         Self {
             adds: None,
             deletes: None,
-            updates: None
+            updates: None,
+            promotions: None
         }
+    }
+
+    /// Initializes a new [`SchemaUpdateBuilder`] helper for the given schema.
+    pub fn for_schema<'a>(schema: &'a Schema) -> SchemaUpdateBuilder<'a> {
+        SchemaUpdateBuilder::for_schema(schema)
+    }
+
+    fn apply_field(&self, field: &Field) -> Field {
+        let update = self.updates.as_ref().and_then(|updates|
+            updates.get(&field.id())
+        );
+
+        let new_type = match field.schema_type() {
+            SchemaType::Primitive(_) => {
+                self.promotions
+                    .as_ref()
+                    .and_then(|promotions|
+                        promotions.get(&field.id())
+                    )
+                    .cloned()
+                    .unwrap_or_else(||
+                        field.schema_type().clone()
+                    )
+            },
+            SchemaType::Struct(s) => {
+                SchemaType::Struct(StructType::new(
+                    self.apply_fields(field.id(), s.fields())
+                ))
+            },
+            SchemaType::List(l) => {
+                SchemaType::List(ListType::of_field(
+                    self.apply_field(l.field())
+                ))
+            },
+            SchemaType::Map(m) => {
+                SchemaType::Map(MapType::of_fields(
+                    self.apply_field(m.key()),
+                    self.apply_field(m.value()),
+                ))
+            }
+        };
+
+        Field::new(
+            field.id(),
+            update.map(|u| u.name.as_str()).unwrap_or_else(|| field.name()),
+            update.map(|u| u.required).unwrap_or_else(|| field.required()),
+            new_type
+        )
+    }
+
+    fn apply_fields(
+        &self,
+        parent_id: i32,
+        fields: &[Field]
+    ) -> Vec<Field> {
+        fields.iter()
+            // Remove deleted fields
+            .filter(|field| {
+                self.deletes
+                    .as_ref()
+                    .and_then(|deletes| {
+                        deletes.iter().find(|deleted_field|
+                            **deleted_field == field.id()
+                        )
+                    })
+                    .is_none()
+            })
+            // Update remaining fields recursively
+            .map(|field| self.apply_field(field))
+            // Add new fields
+            .chain(
+                self.adds
+                    .as_ref()
+                    .and_then(|adds| adds.get(&parent_id))
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+            )
+            .collect()
+    }
+
+    /// Applies this update to a [`Schema`], producing a new schema.
+    pub fn apply(&self, new_schema_id: i32, schema: &Schema) -> Schema {
+        Schema::new(new_schema_id, self.apply_fields(-1, schema.fields()))
     }
 
     fn can_promote_primitive(base: &PrimitiveType, target: &PrimitiveType) -> bool {
@@ -50,10 +183,10 @@ impl SchemaUpdate {
         }
     }
 
-    fn promote_field_type(
+    fn promote_type(
         base: &Field,
         target: &Field
-    ) -> IcebergResult<Option<Field>> {
+    ) -> IcebergResult<Option<SchemaType>> {
         match base.schema_type() {
             SchemaType::Primitive(pb) => {
                 match target.schema_type() {
@@ -61,7 +194,7 @@ impl SchemaUpdate {
                         if pb == pt {
                             Ok(None)
                         } else if Self::can_promote_primitive(pb, pt) {
-                            Ok(Some(target.clone()))
+                            Ok(Some(target.schema_type().clone()))
                         } else {
                             Err(IcebergError::SchemaError {
                                 message: format!(
@@ -123,39 +256,49 @@ impl SchemaUpdate {
         }
     }
 
-    fn between_fields(
-        parent_id: i32,
+    fn update_field(
         base: &Field,
-        target: &Field,
-    ) -> IcebergResult<Self> {
-        // Check if the field's type has been promoted (e.g. int -> long),
-        // or if one of its properties has changed.
-        let new_field = Self::promote_field_type(base, target)?
-            .or_else(|| {
-                if base.name() != target.name() ||
-                   base.required() != target.required() ||
-                   base.doc() != target.doc() {
-                    Some(target.clone())
-                } else {
-                    None
-                }
-            });
-
-        let mut schema_update = Self::new();
-        if let Some(new_field) = new_field {
-            if !base.required() && new_field.required() {
-                return Err(IcebergError::SchemaError {
+        target: &Field
+    ) -> IcebergResult<Option<FieldUpdate>> {
+        if base.name() != target.name() ||
+            base.required() != target.required() ||
+            base.doc() != target.doc() {
+            if !base.required() && target.required() {
+                Err(IcebergError::SchemaError {
                     message: format!(
                         "can't evolve field '{}' from optional to required",
                         base.name()
                     )
-                });
+                })
+            } else {
+                Ok(Some(FieldUpdate::new(
+                    target.name(),
+                    target.required(),
+                    target.doc()
+                )))
             }
+        } else {
+            Ok(None)
+        }
+    }
 
-            // The current field has changed, insert it as an update.
-            schema_update.updates = Some(HashMap::from_iter([(
-                (parent_id, new_field)
-            )]));
+    fn between_fields(
+        base: &Field,
+        target: &Field,
+    ) -> IcebergResult<Self> {
+        let mut schema_update = Self::new();
+
+        // Check if the field's type has been promoted (e.g. int -> long),
+        if let Some(new_type) = Self::promote_type(base, target)? {
+            schema_update.promotions
+                .get_or_insert_with(HashMap::new)
+                .insert(base.id(), new_type);
+        }
+
+        if let Some(field_update) = Self::update_field(base, target)? {
+            schema_update.updates
+                .get_or_insert_with(HashMap::new)
+                .insert(base.id(), field_update);
         }
 
         // Merge recursive schema updates from nested fields.
@@ -172,7 +315,7 @@ impl SchemaUpdate {
             SchemaType::List(lb) => {
                 match target.schema_type() {
                     SchemaType::List(lt) => {
-                        Self::between_fields(base.id(), lb.field(), lt.field())?
+                        Self::between_fields(lb.field(), lt.field())?
                     },
                     _ => panic!()
                 }
@@ -180,9 +323,9 @@ impl SchemaUpdate {
             SchemaType::Map(mb) => {
                 match target.schema_type() {
                     SchemaType::Map(mt) => {
-                        Self::between_fields(base.id(), mb.key(), mt.key())?
+                        Self::between_fields(mb.key(), mt.key())?
                             .merge(
-                                Self::between_fields(base.id(), mb.value(), mt.value())?
+                                Self::between_fields(mb.value(), mt.value())?
                             )
                     },
                     _ => panic!()
@@ -211,11 +354,11 @@ impl SchemaUpdate {
             .iter()
             .filter_map(|(field_id, base_field)| {
                 target_fields.get(field_id).and_then(|target_field|
-                    Some((field_id, base_field, target_field))
+                    Some((base_field, target_field))
                 )
             })
-            .map(|(field_id, base_field, target_field)| {
-                Self::between_fields(field_id.clone(), base_field, target_field)
+            .map(|(base_field, target_field)| {
+                Self::between_fields(base_field, target_field)
             })
             .collect::<IcebergResult<Vec<Self>>>()?
             .into_iter()
@@ -258,7 +401,7 @@ impl SchemaUpdate {
         };
 
         Ok(schema_update.merge(Self {
-            adds: adds, deletes: deletes, updates: None
+            adds: adds, deletes: deletes, updates: None, promotions: None
         }))
     }
 
@@ -275,38 +418,281 @@ impl SchemaUpdate {
         Self::between_field_lists(-1, base.fields(), target.fields())
     }
 
+    fn extend_opts<A, T>(opt_a: Option<T>, opt_b: Option<T>) -> Option<T>
+        where T: IntoIterator<Item = A> + Extend<A>
+    {
+        match (opt_a, opt_b) {
+            (Some(mut a), Some(b)) => {
+                a.extend(b);
+                Some(a)
+            },
+            (a, b) => a.or(b)
+        }
+    }
+
     fn merge(mut self, other: SchemaUpdate) -> Self {
-        self.adds = match (self.adds, other.adds) {
-            (Some(mut adds), Some(other_adds)) => {
-                adds.extend(other_adds);
-                Some(adds)
-            },
-            (opt_adds, opt_other_adds) => opt_adds.or(opt_other_adds)
-        };
-
-        self.deletes = match (self.deletes, other.deletes) {
-            (Some(mut deletes), Some(other_deletes)) => {
-                deletes.extend(other_deletes);
-                Some(deletes)
-            },
-            (opt_deletes, opt_other_deletes) => opt_deletes.or(opt_other_deletes)
-        };
-
-        self.updates = match (self.updates, other.updates) {
-            (Some(mut updates), Some(other_updates)) => {
-                updates.extend(other_updates);
-                Some(updates)
-            },
-            (opt_updates, opt_other_updates) => opt_updates.or(opt_other_updates)
-        };
-
+        self.adds = Self::extend_opts(self.adds, other.adds);
+        self.deletes = Self::extend_opts(self.deletes, other.deletes);
+        self.updates = Self::extend_opts(self.updates, other.updates);
+        self.promotions = Self::extend_opts(self.promotions, other.promotions);
         self
     }
 }
 
+/// Helps build [`SchemaUpdate`]s dynamically and validate the schema
+/// evolution rules applied to a given schema.
+pub struct SchemaUpdateBuilder<'a> {
+    schema: &'a Schema,
+    inner: SchemaUpdate,
+    max_field_id: i32
+}
+
+impl<'a> SchemaUpdateBuilder<'a> {
+    pub fn for_schema(schema: &'a Schema) -> Self {
+        let max_field_id = schema.max_field_id();
+        Self {
+            schema: schema,
+            inner: SchemaUpdate::new(),
+            max_field_id: max_field_id,
+        }
+    }
+
+    fn next_id(&mut self) -> i32 {
+        self.max_field_id += 1;
+        self.max_field_id
+    }
+
+    fn has_adds(&self, id: i32) -> bool {
+        self.inner.adds
+            .as_ref()
+            .and_then(|adds|
+                adds.keys().find(|added_id| **added_id == id)
+            )
+            .is_some()
+    }
+
+    fn is_promoted(&self, id: i32) -> bool {
+        self.inner.promotions
+            .as_ref()
+            .and_then(|promotions|
+                promotions.keys().find(|field_id| **field_id == id)
+            )
+            .is_some()
+    }
+
+    fn is_deleted(&self, id: i32) -> bool {
+        self.inner.deletes
+            .as_ref()
+            .and_then(|deletes|
+                deletes.iter().find(|delete_id| **delete_id == id)
+            )
+            .is_some()
+    }
+
+    pub fn add_field(
+        mut self,
+        parent: Option<i32>,
+        name: &str,
+        required: bool,
+        schema_type: SchemaType
+    ) -> IcebergResult<Self> {
+        if let Some(parent_id) = parent {
+            if self.is_deleted(parent_id) {
+                return Err(IcebergError::SchemaError {
+                    message: format!(
+                        "can't add field '{}' to a deleted parent with id {}",
+                        name, parent_id
+                    )
+                });
+            }
+
+            let parent = self.schema.all_fields()
+                .find(|field| field.id() == parent_id)
+                .ok_or_else(|| IcebergError::SchemaError {
+                    message: format!(
+                        "can't add field '{}' to non-existent parent id {}",
+                        name, parent_id
+                    )
+                })?;
+
+            if !parent.schema_type().is_struct() {
+                return Err(IcebergError::SchemaError {
+                    message: format!(
+                        "can't add field '{}' to a non-struct parent with id {}",
+                        name, parent_id
+                    )
+                });
+            }
+        }
+
+        let field = Field::new(
+            0,
+            name,
+            required,
+            schema_type
+        ).with_fresh_ids(&mut || self.next_id());
+
+        self.inner.adds
+            .get_or_insert_with(|| HashMap::new())
+            .entry(parent.unwrap_or(-1))
+            .or_insert_with(|| Vec::new())
+            .push(field);
+
+        Ok(self)
+    }
+
+    pub fn delete_field(mut self, field_id: i32) -> IcebergResult<Self> {
+        if !self.schema.all_fields().any(|field| field.id() == field_id) {
+            return Err(IcebergError::SchemaError {
+                message: format!("can't delete non-existent field id {}", field_id)
+            });
+        }
+
+        if self.has_adds(field_id) {
+            return Err(IcebergError::SchemaError {
+                message: format!(
+                    "can't delete field id {} because it has added nested fields",
+                    field_id
+                )
+            });
+        }
+
+        if self.is_promoted(field_id) {
+            return Err(IcebergError::SchemaError {
+                message: format!(
+                    "can't delete field id {} because its type has been promoted",
+                    field_id
+                )
+            });
+        }
+
+        self.inner.deletes
+            .get_or_insert_with(Vec::new)
+            .push(field_id);
+
+        Ok(self)
+    }
+
+    pub fn promote_field(
+        mut self,
+        field_id: i32,
+        new_type: SchemaType
+    ) -> IcebergResult<Self> {
+        let field = self.schema.all_fields().find(|field| field.id() == field_id)
+            .ok_or_else(|| IcebergError::SchemaError {
+                message: format!("can't promote non-existent field id {}", field_id)
+            })?;
+
+        if self.is_deleted(field_id) {
+            return Err(IcebergError::SchemaError {
+                message: format!(
+                    "can't promote deleted field id {}", field_id
+                )
+            });
+        }
+
+        match (field.schema_type(), &new_type) {
+            (SchemaType::Primitive(pb), SchemaType::Primitive(pt)) => {
+                if SchemaUpdate::can_promote_primitive(pb, pt) {
+                    self.inner.promotions
+                        .get_or_insert_with(HashMap::new)
+                        .insert(field_id, new_type);
+
+                    Ok(self)
+                } else {
+                    Err(IcebergError::SchemaError {
+                        message: format!(
+                            "can't promote field id {} from type {} to {}",
+                            field_id, pb, pt
+                        )
+                    })
+                }
+            },
+            _ => {
+                Err(IcebergError::SchemaError {
+                    message: format!(
+                        "can't promote field id {} from or to non-primitive type",
+                        field_id
+                    )
+                })
+            }
+        }
+    }
+
+    /// Applies the update to the associated schema, producing a new [`Schema`] and
+    /// consuming the builder.
+    pub fn apply(self, new_schema_id: i32) -> Schema {
+        self.inner.apply(new_schema_id, self.schema)
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Test SchemaUpdate::apply() when a field was added.
+    #[test]
+    fn add_field() {
+        let base = Schema::new(0, vec![
+            Field::new_primitive(1, "id", true, PrimitiveType::Long)
+        ]);
+
+        let expected = Schema::new(1, vec![
+            Field::new_primitive(1, "id", true, PrimitiveType::Long),
+            Field::new_primitive(2, "ts", false, PrimitiveType::Timestamp)
+        ]);
+
+        assert_eq!(
+            SchemaUpdate::for_schema(&base)
+                .add_field(
+                    None,
+                    "ts",
+                    false,
+                    SchemaType::Primitive(PrimitiveType::Timestamp)
+                ).unwrap()
+                .apply(1),
+            expected
+        );
+    }
+
+    #[test]
+    fn delete_field() {
+        let base = Schema::new(0, vec![
+            Field::new_primitive(1, "id", true, PrimitiveType::Long),
+            Field::new_primitive(2, "ts", false, PrimitiveType::Timestamp)
+        ]);
+
+        let expected = Schema::new(1, vec![
+            Field::new_primitive(1, "id", true, PrimitiveType::Long)
+        ]);
+
+        assert_eq!(
+            SchemaUpdate::for_schema(&base)
+                .delete_field(2).unwrap()
+                .apply(1),
+            expected
+        );
+    }
+
+    #[test]
+    fn promote_field() {
+        let base = Schema::new(0, vec![
+            Field::new_primitive(1, "id", true, PrimitiveType::Int),
+        ]);
+
+        let expected = Schema::new(1, vec![
+            Field::new_primitive(1, "id", true, PrimitiveType::Long)
+        ]);
+
+        assert_eq!(
+            SchemaUpdate::for_schema(&base)
+                .promote_field(1, SchemaType::Primitive(PrimitiveType::Long))
+                .unwrap()
+                .apply(1),
+            expected
+        );
+    }
 
     // Test SchemaUpdate::between() when a field was added.
     #[test]
@@ -323,6 +709,7 @@ mod tests {
         let schema_update = SchemaUpdate::between(&base, &target).unwrap();
         assert!(schema_update.updates.is_none());
         assert!(schema_update.deletes.is_none());
+        assert!(schema_update.promotions.is_none());
         assert_eq!(
             schema_update.adds.unwrap().get(&-1).unwrap(),
             &vec![
@@ -351,6 +738,7 @@ mod tests {
         let schema_update = SchemaUpdate::between(&base, &target).unwrap();
         assert!(schema_update.updates.is_none());
         assert!(schema_update.deletes.is_none());
+        assert!(schema_update.promotions.is_none());
         assert_eq!(
             schema_update.adds.as_ref().unwrap().get(&-1).unwrap(),
             &vec![
@@ -381,7 +769,7 @@ mod tests {
         assert!(schema_update.adds.is_none());
         assert_eq!(
             schema_update.updates.as_ref().unwrap().get(&1).unwrap(),
-            &Field::new_primitive(1, "user_id", false, PrimitiveType::Long)
+            &FieldUpdate::new("user_id", false, None)
         );
     }
 
@@ -421,9 +809,10 @@ mod tests {
         let schema_update = SchemaUpdate::between(&base, &target).unwrap();
         assert!(schema_update.adds.is_none());
         assert!(schema_update.deletes.is_none());
+        assert!(schema_update.updates.is_none());
         assert_eq!(
-            schema_update.updates.as_ref().unwrap().get(&1).unwrap(),
-            &Field::new_primitive(1, "id", false, PrimitiveType::Long)
+            schema_update.promotions.as_ref().unwrap().get(&1).unwrap(),
+            &SchemaType::Primitive(PrimitiveType::Long)
         );
     }
 
