@@ -25,6 +25,7 @@ arrow-schema = { git = "https://github.com/omrimallis/arrow-rs", branch = "parqu
 arrow-array = { git = "https://github.com/omrimallis/arrow-rs", branch = "parquet-field-id" }
 parquet = { git = "https://github.com/omrimallis/arrow-rs", branch = "parquet-field-id" }
 murmur3 = { version = "0.5.2" }
+async-trait = { version = "0.1.69" }
 
 [features]
 s3 = ["object_store/aws", "object_store/aws_profile"]

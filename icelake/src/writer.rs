@@ -261,7 +261,7 @@ impl RecordBatchWriter {
         let mut transaction = table.new_transaction();
         let mut operation = AppendFilesOperation::new();
         operation.append_files(data_files);
-        transaction.set_operation(Box::new(operation));
+        transaction.add_operation(Box::new(operation));
 
         transaction.commit().await
     }

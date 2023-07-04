@@ -2,8 +2,11 @@
 use rand::Rng;
 use uuid::Uuid;
 use bytes::Bytes;
+use async_trait;
 
 use crate::{IcebergTable, IcebergTableMetadata, IcebergFile, IcebergResult};
+use crate::schema::Schema;
+use crate::schema::update::SchemaUpdate;
 use crate::utils;
 use crate::manifest::{
     ManifestList, Manifest, ManifestContentType,
@@ -12,22 +15,17 @@ use crate::manifest::{
     DataFile
 };
 use crate::snapshot::{
-    Snapshot, SnapshotSummary, SnapshotSummaryBuilder,
+    Snapshot, SnapshotSummary,
     SnapshotOperation, SnapshotLog
 };
-use crate::storage::IcebergPath;
 
-pub struct TableFile {
-    pub path: IcebergPath,
-    pub content: Bytes,
-}
-
+#[async_trait::async_trait]
 pub trait TableOperation {
-    fn apply(
+    async fn apply(
         &self,
         table: &IcebergTable,
-        state: &mut TransactionState,
-    ) -> IcebergResult<()>;
+        metadata: &IcebergTableMetadata
+    ) -> IcebergResult<TransactionState>;
 }
 
 /// Used to append files to the table.
@@ -48,19 +46,19 @@ impl AppendFilesOperation {
 
     fn create_manifest(
         &self,
-        table: &IcebergTable,
-        state: &mut TransactionState,
+        metadata: &IcebergTableMetadata,
+        snapshot_id: i64,
     ) -> IcebergResult<Manifest> {
         // Create a new manifest with the list of new files.
         let mut manifest = Manifest::new(
-            table.current_schema()?.clone(),
-            table.current_partition_spec()?.clone(),
+            metadata.current_schema().clone(),
+            metadata.current_partition_spec().clone(),
             ManifestContentType::Data
         );
         for data_file in &self.data_files {
             manifest.add_manifest_entry(ManifestEntry::new(
                 ManifestEntryStatus::Added,
-                state.snapshot_id,
+                snapshot_id,
                 data_file.clone()
             ));
         }
@@ -68,168 +66,150 @@ impl AppendFilesOperation {
     }
 }
 
+#[async_trait::async_trait]
 impl TableOperation for AppendFilesOperation {
-    fn apply(
+    async fn apply(
         &self,
         table: &IcebergTable,
-        state: &mut TransactionState,
-    ) -> IcebergResult<()> {
-        let manifest = self.create_manifest(table, state)?;
+        metadata: &IcebergTableMetadata
+    ) -> IcebergResult<TransactionState> {
+        let current_snapshot = metadata.current_snapshot();
+        let mut current_manifest_list = match current_snapshot {
+            Some(current_snapshot) => {
+                table.read_manifest_list(current_snapshot).await?
+            },
+            None => ManifestList::new()
+        };
 
-        // Update the snapshot summary
-        state.summary_builder
-            .operation(SnapshotOperation::Append)
-            .add_data_files(manifest.entries().len().try_into().unwrap());
+        let new_snapshot_id = rand::thread_rng().gen_range(0..i64::MAX);
 
-        let mut file = table.new_metadata_file(
+        let manifest = self.create_manifest(metadata, new_snapshot_id)?;
+
+        let mut manifest_file = table.new_metadata_file(
             &format!("{}-m0.avro", Uuid::new_v4().to_string()),
             Bytes::new()
         )?;
 
         // Encode the on-disk manifest file.
-        let writer = ManifestWriter::new(state.sequence_number, state.snapshot_id);
+        let writer = ManifestWriter::new(
+            metadata.last_sequence_number,
+            new_snapshot_id
+        );
         let (manifest_content, manifest_file_entry) = writer.write(
-            &file.url(), &manifest
+            &manifest_file.url(), &manifest
         )?;
 
-        file.set_bytes(manifest_content);
+        manifest_file.set_bytes(manifest_content);
 
         // Update the manifest list with a ManifestFile pointing to the new
         // manifest file.
-        state.manifest_list.push(manifest_file_entry);
+        current_manifest_list.push(manifest_file_entry);
 
-        // Add the manifest to the list of files to be written to storage.
-        state.files.push(file);
+        // Write a new manifest list to storage
+        let manifest_list_file = table.new_metadata_file(
+            &format!(
+                "snap-{}-1-{}.avro",
+                new_snapshot_id,
+                Uuid::new_v4().to_string()
+            ),
+            Bytes::from(current_manifest_list.encode()?)
+        )?;
 
-        Ok(())
+        // Build a snapshot summary
+        let mut summary_builder = SnapshotSummary::builder();
+        if let Some(snapshot) = current_snapshot {
+            summary_builder.copy_totals(&snapshot.summary);
+        }
+        summary_builder
+            .operation(SnapshotOperation::Append)
+            .add_data_files(manifest.entries().len().try_into().unwrap());
+
+        Ok(TransactionState {
+            snapshot: Some(Snapshot {
+                snapshot_id: new_snapshot_id,
+                // Use current snapshot as parent, or None for first snapshot.
+                parent_snapshot_id: current_snapshot.map(|s| s.snapshot_id),
+                // Sequence number increased by 1 for every new snapshot.
+                sequence_number: metadata.last_sequence_number,
+                timestamp_ms: metadata.last_updated_ms,
+                // Path to the manifest list file of this snapshot.
+                manifest_list: manifest_list_file.url(),
+                // Snapshot statistics summary
+                summary: summary_builder.build(),
+                schema_id: Some(metadata.current_schema_id),
+            }),
+            schema: None,
+            files: vec![manifest_list_file, manifest_file]
+        })
     }
 }
 
-/// Stores states of operations to be performed as part of this transaction.
-/// Each operation updates the state to reflect the changes it applies.
+/// Stores results of operations to be performed as part of this transaction.
+/// Each operation returns a state to reflect the changes it applies.
 pub struct TransactionState {
-    /// Sequence number of the commit.
-    sequence_number: i64,
-    /// Id of the new snapshot to be committed by this transaction.
-    snapshot_id: i64,
-    /// Timestamp of the commit in Iceberg convention (millis since epoch).
-    timestamp: i64,
-    /// Builds the summary of the new snapshot.
-    summary_builder: SnapshotSummaryBuilder,
-    /// Contains the full new list of manifests.
-    manifest_list: ManifestList,
+    /// New snapshot created by an operation.
+    snapshot: Option<Snapshot>,
+    /// Updated schema
+    schema: Option<Schema>,
     /// List of files pending to be written to the table's storage.
     files: Vec<IcebergFile>
 }
 
 pub struct Transaction<'a> {
     table: &'a mut IcebergTable,
-    operation: Option<Box<dyn TableOperation>>,
+    operations: Vec<Box<dyn TableOperation>>,
 }
 
 impl<'a> Transaction<'a> {
     pub fn new(table: &'a mut IcebergTable) -> Self {
         Self {
             table: table,
-            operation: None,
+            operations: Vec::new(),
         }
     }
 
     /// Sets the operation to be commited by this transaction.
-    pub fn set_operation(&mut self, operation: Box<dyn TableOperation>) {
-        self.operation = Some(operation);
-    }
-
-    /// Prepares a new table metadata based on the transactions's state created by the
-    /// inner operations. Writes all manifest lists and manifest files to storage.
-    async fn prepare_metadata(
-        &mut self, state: TransactionState
-    ) -> IcebergResult<IcebergTableMetadata> {
-        let current_schema = self.table.current_schema()?;
-        let current_snapshot = self.table.current_snapshot()?;
-        let current_metadata = self.table.current_metadata()?;
-
-        let mut new_metadata = (*current_metadata).clone();
-        new_metadata.last_updated_ms = state.timestamp;
-        new_metadata.last_sequence_number = state.sequence_number;
-
-        // Write all files created by the operation to storage.
-        for file in state.files {
-            // TODO: Remove previously written files on failure.
-            file.save().await?;
-        }
-
-        if !state.manifest_list.is_empty() {
-            // Write a new manifest list to storage
-            let uuid = Uuid::new_v4().to_string();
-            let manifest_list_file = self.table.new_metadata_file(
-                &format!("snap-{}-1-{}.avro", state.snapshot_id, uuid),
-                Bytes::from(state.manifest_list.encode()?)
-            )?;
-
-            manifest_list_file.save().await?;
-
-            // Create a new snapshot pointing to the newly created manifest list.
-            let snapshot = Snapshot {
-                snapshot_id: state.snapshot_id,
-                // Use current snapshot as parent, or None for first snapshot.
-                parent_snapshot_id: current_snapshot.map(|s| s.snapshot_id),
-                // Sequence number increased by 1 for every new snapshot.
-                sequence_number: state.sequence_number,
-                timestamp_ms: state.timestamp,
-                // Path to the manifest list file of this snapshot.
-                manifest_list: manifest_list_file.url(),
-                // Snapshot statistics summary
-                summary: state.summary_builder.build(),
-                schema_id: Some(current_schema.id()),
-            };
-
-            // Set the new snapshot set as current.
-            new_metadata.current_snapshot_id = Some(snapshot.snapshot_id);
-            new_metadata.snapshot_log
-                .get_or_insert(Vec::new())
-                .push(SnapshotLog::new(snapshot.snapshot_id, snapshot.timestamp_ms));
-            new_metadata.snapshots
-                .get_or_insert(Vec::new())
-                .push(snapshot);
-        }
-
-        Ok(new_metadata)
+    pub fn add_operation(&mut self, operation: Box<dyn TableOperation>) {
+        self.operations.push(operation);
     }
 
     pub async fn commit(&mut self) -> IcebergResult<()> {
-        let current_snapshot = self.table.current_snapshot()?;
-        let current_metadata = self.table.current_metadata()?;
+        for operation in &self.operations {
+            let current_metadata = self.table.current_metadata()?;
+            let mut new_metadata = (*current_metadata).clone();
+            new_metadata.last_updated_ms = utils::current_time_ms()?;
+            new_metadata.last_sequence_number += 1;
 
-        let manifest_list = match current_snapshot {
-            Some(current_snapshot) => {
-                self.table.read_manifest_list(current_snapshot).await?
-            },
-            None => ManifestList::new()
-        };
+            // Apply the operation, potentially producing a new snapshot and a new
+            // schema.
+            let state = operation.apply(self.table, &new_metadata).await?;
 
-        let mut summary_builder = SnapshotSummary::builder();
-        if let Some(current_snapshot) = current_snapshot {
-            summary_builder.copy_totals(&current_snapshot.summary);
+            if let Some(snapshot) = state.snapshot {
+                // Set the new snapshot set as current.
+                new_metadata.current_snapshot_id = Some(snapshot.snapshot_id);
+                new_metadata.snapshot_log
+                    .get_or_insert_with(Vec::new)
+                    .push(SnapshotLog::new(snapshot.snapshot_id, snapshot.timestamp_ms));
+                new_metadata.snapshots
+                    .get_or_insert_with(Vec::new)
+                    .push(snapshot);
+            }
+
+            if let Some(schema) = state.schema {
+                new_metadata.current_schema_id = schema.id();
+                new_metadata.schemas.push(schema);
+            }
+
+            // Write all files created by the operation to storage.
+            for file in state.files {
+                // TODO: Remove previously written files on failure.
+                file.save().await?;
+            }
+
+            // TODO: If a commit fails we need to revert changes.
+            self.table.commit(new_metadata).await?
         }
 
-        let mut state = TransactionState {
-            sequence_number: current_metadata.last_sequence_number + 1,
-            snapshot_id: rand::thread_rng().gen_range(0..i64::MAX),
-            timestamp: utils::current_time_ms()?,
-            summary_builder: summary_builder,
-            manifest_list: manifest_list,
-            files: Vec::new(),
-        };
-
-        // If an operation was provided, apply it. Otherwise do nothing, a new snapshot
-        // and metadata will be generated with updated sequence numbers and timestamps.
-        if let Some(operation) = &self.operation {
-            operation.apply(self.table, &mut state)?;
-        }
-
-        let new_metadata = self.prepare_metadata(state).await?;
-        // TODO: Remove written files.
-        self.table.commit(new_metadata).await
+        Ok(())
     }
 }
