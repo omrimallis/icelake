@@ -246,7 +246,7 @@ pub struct TransactionState {
 /// A transaction for performing multiple operations on a table.
 pub struct Transaction<'a> {
     table: &'a mut IcebergTable,
-    operations: Vec<Box<dyn TableOperation>>,
+    operations: Vec<Box<dyn TableOperation + Send + Sync>>
 }
 
 impl<'a> Transaction<'a> {
@@ -258,14 +258,14 @@ impl<'a> Transaction<'a> {
     }
 
     /// Adds an operation to be performed as part of this transaction.
-    pub fn add_operation(&mut self, operation: Box<dyn TableOperation>) {
+    pub fn add_operation(&mut self, operation: Box<dyn TableOperation + Send + Sync>) {
         self.operations.push(operation);
     }
 
     /// Attempts to commit this transaction to the table, applying all operations
     /// one after the other and generating new table metadata.
-    pub async fn commit(&mut self) -> IcebergResult<()> {
-        for operation in &self.operations {
+    pub async fn commit(self) -> IcebergResult<()> {
+        for operation in self.operations {
             let current_metadata = self.table.current_metadata()?;
             let mut new_metadata = (*current_metadata).clone();
             new_metadata.last_updated_ms = utils::current_time_ms()?;
