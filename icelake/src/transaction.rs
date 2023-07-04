@@ -28,6 +28,70 @@ pub trait TableOperation {
     ) -> IcebergResult<TransactionState>;
 }
 
+pub struct DoNothingOperation;
+
+impl DoNothingOperation {
+    pub fn new() -> Self { Self {} }
+}
+
+#[async_trait::async_trait]
+impl TableOperation for DoNothingOperation {
+    async fn apply(
+        &self,
+        _table: &IcebergTable,
+        _metadata: &IcebergTableMetadata
+    ) -> IcebergResult<TransactionState> {
+        Ok(TransactionState {
+            snapshot: None,
+            schema: None,
+            files: Vec::new()
+        })
+    }
+}
+
+pub struct UpdateSchemaOperation {
+    new_schema: Option<Schema>
+}
+
+impl UpdateSchemaOperation {
+    pub fn new() -> Self {
+        Self {
+            new_schema: None
+        }
+    }
+
+    pub fn set_schema(&mut self, schema: Schema) {
+        self.new_schema = Some(schema);
+    }
+}
+
+#[async_trait::async_trait]
+impl TableOperation for UpdateSchemaOperation {
+    async fn apply(
+        &self,
+        _table: &IcebergTable,
+        metadata: &IcebergTableMetadata
+    ) -> IcebergResult<TransactionState> {
+        let new_schema = match &self.new_schema {
+            Some(new_schema) => {
+                let current_schema = metadata.current_schema();
+
+                // We use this only to check that the schema update can be applied.
+                let _schema_update = SchemaUpdate::between(current_schema, new_schema)?;
+
+                Some(new_schema.clone())
+            },
+            None => None
+        };
+
+        Ok(TransactionState {
+            snapshot: None,
+            schema: new_schema,
+            files: Vec::new()
+        })
+    }
+}
+
 /// Used to append files to the table.
 pub struct AppendFilesOperation {
     data_files: Vec<DataFile>,

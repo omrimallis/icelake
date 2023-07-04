@@ -500,7 +500,7 @@ impl<'a> SchemaUpdateBuilder<'a> {
             if self.is_deleted(parent_id) {
                 return Err(IcebergError::SchemaError {
                     message: format!(
-                        "can't add field '{}' to a deleted parent with id {}",
+                        "can't add field '{}' to deleted parent id {}",
                         name, parent_id
                     )
                 });
@@ -518,8 +518,8 @@ impl<'a> SchemaUpdateBuilder<'a> {
             if !parent.schema_type().is_struct() {
                 return Err(IcebergError::SchemaError {
                     message: format!(
-                        "can't add field '{}' to a non-struct parent with id {}",
-                        name, parent_id
+                        "can't add field '{}' to non-struct parent '{}'",
+                        name, parent.name()
                     )
                 });
             }
@@ -602,7 +602,8 @@ impl<'a> SchemaUpdateBuilder<'a> {
                 } else {
                     Err(IcebergError::SchemaError {
                         message: format!(
-                            "can't promote field id {} from type {} to {}",
+                            "can't promote field id {}: \
+                            invalid type promotion type {} to {}",
                             field_id, pb, pt
                         )
                     })
