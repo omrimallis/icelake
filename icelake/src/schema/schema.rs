@@ -667,6 +667,10 @@ impl Schema {
 
     pub fn id(&self) -> i32 { self.schema_id }
 
+    pub fn set_id(&mut self, schema_id: i32) {
+        self.schema_id = schema_id;
+    }
+
     pub fn max_field_id(&self) -> i32 {
         self.all_fields().max_by_key(|f| f.id()).unwrap().id()
     }

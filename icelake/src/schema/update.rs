@@ -79,6 +79,14 @@ impl SchemaUpdate {
         SchemaUpdateBuilder::for_schema(schema)
     }
 
+    /// Returns true if this schema update does not apply any changes.
+    pub fn is_empty(&self) -> bool {
+        self.adds.is_none() &&
+            self.deletes.is_none() &&
+            self.updates.is_none() &&
+            self.promotions.is_none()
+    }
+
     fn apply_field(&self, field: &Field) -> Field {
         let update = self.updates.as_ref().and_then(|updates|
             updates.get(&field.id())
@@ -187,71 +195,61 @@ impl SchemaUpdate {
         base: &Field,
         target: &Field
     ) -> IcebergResult<Option<SchemaType>> {
-        match base.schema_type() {
-            SchemaType::Primitive(pb) => {
-                match target.schema_type() {
-                    SchemaType::Primitive(pt) => {
-                        if pb == pt {
-                            Ok(None)
-                        } else if Self::can_promote_primitive(pb, pt) {
-                            Ok(Some(target.schema_type().clone()))
-                        } else {
-                            Err(IcebergError::SchemaError {
-                                message: format!(
-                                    "can't evolve primitive field '{}' from type {} to \
-                                    type {}", base.name(), pb, pt
-                                )
-                            })
-                        }
-                    },
-                    _ => {
-                        Err(IcebergError::SchemaError {
-                            message: format!(
-                                "can't evolve primitive field '{}' to non-primitive \
-                                field", base.name()
-                            )
-                        })
-                    }
+        match (base.schema_type(), target.schema_type()) {
+            (SchemaType::Primitive(pb), SchemaType::Primitive(pt)) => {
+                if pb == pt {
+                    Ok(None)
+                } else if Self::can_promote_primitive(pb, pt) {
+                    Ok(Some(target.schema_type().clone()))
+                } else {
+                    Err(IcebergError::SchemaError {
+                        message: format!(
+                            "can't evolve primitive field '{}' from type {} to type {}",
+                            base.name(), pb, pt
+                        )
+                    })
                 }
             },
-            SchemaType::Struct(_) => {
-                match target.schema_type() {
-                    SchemaType::Struct(_) => { Ok(None) },
-                    _ => {
-                        Err(IcebergError::SchemaError {
-                            message: format!(
-                                "can't evolve struct field '{}' to non-struct field",
-                                base.name()
-                            )
-                        })
-                    }
-                }
+            (SchemaType::Primitive(_),  _) => {
+                Err(IcebergError::SchemaError {
+                    message: format!(
+                        "can't evolve primitive field '{}' to non-primitive field",
+                        base.name()
+                    )
+                })
             },
-            SchemaType::List(_) => {
-                match target.schema_type() {
-                    SchemaType::List(_) => { Ok(None) },
-                    _ => {
-                        Err(IcebergError::SchemaError {
-                            message: format!(
-                                "can't evolve list field '{}' to non-list field",
-                                base.name()
-                            )
-                        })
-                    }
-                }
+            (SchemaType::Struct(_), SchemaType::Struct(_)) => {
+                Ok(None)
             },
-            SchemaType::Map(_) => {
-                match target.schema_type() {
-                    SchemaType::Map(_) => { Ok(None) },
-                    _ => {
-                        Err(IcebergError::SchemaError {
-                            message: format!(
-                                "can't evolve map field '{}' to non-map field",
-                                base.name()
-                            )
-                        })
-                    }
-                }
+            (SchemaType::Struct(_), _) => {
+                Err(IcebergError::SchemaError {
+                    message: format!(
+                        "can't evolve struct field '{}' to non-struct field",
+                        base.name()
+                    )
+                })
+            },
+            (SchemaType::List(_), SchemaType::List(_)) => {
+                Ok(None)
+            },
+            (SchemaType::List(_), _) => {
+                Err(IcebergError::SchemaError {
+                    message: format!(
+                        "can't evolve list field '{}' to non-list field",
+                        base.name()
+                    )
+                })
+            },
+            (SchemaType::Map(_), SchemaType::Map(_)) => {
+                Ok(None)
+            },
+            (SchemaType::Map(_), _) => {
+                Err(IcebergError::SchemaError {
+                    message: format!(
+                        "can't evolve map field '{}' to non-map field",
+                        base.name()
+                    )
+                })
             }
         }
     }
@@ -302,36 +300,32 @@ impl SchemaUpdate {
         }
 
         // Merge recursive schema updates from nested fields.
-        Ok(schema_update.merge(match base.schema_type() {
-            SchemaType::Primitive(_) => { Self::new() },
-            SchemaType::Struct(sb) => {
-                match target.schema_type() {
-                    SchemaType::Struct(st) => {
-                        Self::between_field_lists(base.id(), sb.fields(), st.fields())?
-                    },
-                    _ => panic!()
-                }
+        Ok(match (base.schema_type(), target.schema_type()) {
+            (SchemaType::Primitive(_), SchemaType::Primitive(_)) => {
+                schema_update
             },
-            SchemaType::List(lb) => {
-                match target.schema_type() {
-                    SchemaType::List(lt) => {
-                        Self::between_fields(lb.field(), lt.field())?
-                    },
-                    _ => panic!()
-                }
+            (SchemaType::Struct(sb), SchemaType::Struct(st)) => {
+                schema_update.merge(
+                    Self::between_field_lists(base.id(), sb.fields(), st.fields())?
+                )
             },
-            SchemaType::Map(mb) => {
-                match target.schema_type() {
-                    SchemaType::Map(mt) => {
-                        Self::between_fields(mb.key(), mt.key())?
-                            .merge(
-                                Self::between_fields(mb.value(), mt.value())?
-                            )
-                    },
-                    _ => panic!()
-                }
+            (SchemaType::List(lb), SchemaType::List(lt)) => {
+                schema_update.merge(
+                    Self::between_fields(lb.field(), lt.field())?
+                )
+            },
+            (SchemaType::Map(mb), SchemaType::Map(mt)) => {
+                schema_update.merge(
+                    Self::between_fields(mb.key(), mt.key())?
+                ).merge(
+                    Self::between_fields(mb.value(), mt.value())?
+                )
+            },
+            _ => {
+                // All mismatching cases were already handled by promote_type()
+                panic!("unexpected mismatching field types")
             }
-        }))
+        })
     }
 
     fn between_field_lists(
@@ -852,4 +846,26 @@ mod tests {
             Err(IcebergError::SchemaError{..})
         ));
     }
+
+    // Test SchemaUpdate::between() between identical schemas.
+    #[test]
+    fn between_identical_schemas() {
+        let schema = Schema::new(0, vec![
+            Field::new_primitive(1, "id", true, PrimitiveType::Long),
+            Field::new_struct(2, "name", true, vec![
+                Field::new_primitive(3, "first", false, PrimitiveType::String),
+                Field::new_primitive(4, "last", false, PrimitiveType::String)
+            ]),
+            Field::new_list(5, "items", true,
+                Field::new_primitive(6, "element", true, PrimitiveType::String)
+            ),
+            Field::new_map(7, "data", false,
+                Field::new_primitive(8, "key", true, PrimitiveType::String),
+                Field::new_primitive(9, "value", true, PrimitiveType::String)
+            )
+        ]);
+
+        assert!(SchemaUpdate::between(&schema, &schema).unwrap().is_empty());
+    }
+
 }

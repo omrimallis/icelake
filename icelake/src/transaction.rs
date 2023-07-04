@@ -19,6 +19,7 @@ use crate::snapshot::{
     SnapshotOperation, SnapshotLog
 };
 
+/// An operation that can be applied to an iceberg table as part of a transaction.
 #[async_trait::async_trait]
 pub trait TableOperation {
     async fn apply(
@@ -28,6 +29,10 @@ pub trait TableOperation {
     ) -> IcebergResult<TransactionState>;
 }
 
+/// An empty operation that does not affect tht table.
+///
+/// Applying this operation as part of a transaction will result in the table's
+/// sequence number increasing, but no new snapshot will be generated.
 pub struct DoNothingOperation;
 
 impl DoNothingOperation {
@@ -49,19 +54,25 @@ impl TableOperation for DoNothingOperation {
     }
 }
 
+/// An operation for updating the schema of the table.
 pub struct UpdateSchemaOperation {
-    new_schema: Option<Schema>
+    schema: Option<Schema>
 }
 
 impl UpdateSchemaOperation {
     pub fn new() -> Self {
         Self {
-            new_schema: None
+            schema: None
         }
     }
 
+    /// Sets the schema to be set as the current schema.
+    ///
+    /// Note: The schema id associated with the input schema is ignored. A new id
+    /// will be assigned automatically based on the next available schema id for the
+    /// table.
     pub fn set_schema(&mut self, schema: Schema) {
-        self.new_schema = Some(schema);
+        self.schema = Some(schema);
     }
 }
 
@@ -72,14 +83,25 @@ impl TableOperation for UpdateSchemaOperation {
         _table: &IcebergTable,
         metadata: &IcebergTableMetadata
     ) -> IcebergResult<TransactionState> {
-        let new_schema = match &self.new_schema {
-            Some(new_schema) => {
-                let current_schema = metadata.current_schema();
-
+        let new_schema = match &self.schema {
+            Some(schema) => {
                 // We use this only to check that the schema update can be applied.
-                let _schema_update = SchemaUpdate::between(current_schema, new_schema)?;
+                let _schema_update = SchemaUpdate::between(
+                    metadata.current_schema(),
+                    schema
+                )?;
 
-                Some(new_schema.clone())
+                let mut new_schema = schema.clone();
+                // Set a new schema id.
+                new_schema.set_id(
+                    metadata.schemas
+                        .iter()
+                        .map(|schema| schema.id())
+                        .max()
+                        .unwrap() + 1
+                );
+
+                Some(new_schema)
             },
             None => None
         };
@@ -92,7 +114,7 @@ impl TableOperation for UpdateSchemaOperation {
     }
 }
 
-/// Used to append files to the table.
+/// An operation to append data files to the table.
 pub struct AppendFilesOperation {
     data_files: Vec<DataFile>,
 }
@@ -100,10 +122,12 @@ pub struct AppendFilesOperation {
 impl AppendFilesOperation {
     pub fn new() -> Self { Self { data_files: Vec::new() } }
 
+    /// Adds a file to the list of data files to be appended.
     pub fn append_file(&mut self, file: DataFile) {
         self.data_files.push(file);
     }
 
+    /// Adds all given files to the list of data files to be appended.
     pub fn append_files(&mut self, files: impl IntoIterator<Item=DataFile>) {
         self.data_files.extend(files);
     }
@@ -219,6 +243,7 @@ pub struct TransactionState {
     files: Vec<IcebergFile>
 }
 
+/// A transaction for performing multiple operations on a table.
 pub struct Transaction<'a> {
     table: &'a mut IcebergTable,
     operations: Vec<Box<dyn TableOperation>>,
@@ -232,11 +257,13 @@ impl<'a> Transaction<'a> {
         }
     }
 
-    /// Sets the operation to be commited by this transaction.
+    /// Adds an operation to be performed as part of this transaction.
     pub fn add_operation(&mut self, operation: Box<dyn TableOperation>) {
         self.operations.push(operation);
     }
 
+    /// Attempts to commit this transaction to the table, applying all operations
+    /// one after the other and generating new table metadata.
     pub async fn commit(&mut self) -> IcebergResult<()> {
         for operation in &self.operations {
             let current_metadata = self.table.current_metadata()?;
