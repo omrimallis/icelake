@@ -1,0 +1,149 @@
+{
+  "format-version" : 2,
+  "table-uuid" : "a56a9c46-06d7-49ce-9612-6b422e3c4870",
+  "location" : "s3://breezelabs-temporary-data/iceberg/lineitem",
+  "last-sequence-number" : 1,
+  "last-updated-ms" : 1685966966031,
+  "last-column-id" : 16,
+  "current-schema-id" : 0,
+  "schemas" : [ {
+    "type" : "struct",
+    "schema-id" : 0,
+    "fields" : [ {
+      "id" : 1,
+      "name" : "orderkey",
+      "required" : false,
+      "type" : "long"
+    }, {
+      "id" : 2,
+      "name" : "partkey",
+      "required" : false,
+      "type" : "long"
+    }, {
+      "id" : 3,
+      "name" : "suppkey",
+      "required" : false,
+      "type" : "long"
+    }, {
+      "id" : 4,
+      "name" : "linenumber",
+      "required" : false,
+      "type" : "int"
+    }, {
+      "id" : 5,
+      "name" : "quantity",
+      "required" : false,
+      "type" : "double"
+    }, {
+      "id" : 6,
+      "name" : "extendedprice",
+      "required" : false,
+      "type" : "double"
+    }, {
+      "id" : 7,
+      "name" : "discount",
+      "required" : false,
+      "type" : "double"
+    }, {
+      "id" : 8,
+      "name" : "tax",
+      "required" : false,
+      "type" : "double"
+    }, {
+      "id" : 9,
+      "name" : "returnflag",
+      "required" : false,
+      "type" : "string"
+    }, {
+      "id" : 10,
+      "name" : "linestatus",
+      "required" : false,
+      "type" : "string"
+    }, {
+      "id" : 11,
+      "name" : "shipdate",
+      "required" : false,
+      "type" : "date"
+    }, {
+      "id" : 12,
+      "name" : "commitdate",
+      "required" : false,
+      "type" : "date"
+    }, {
+      "id" : 13,
+      "name" : "receiptdate",
+      "required" : false,
+      "type" : "date"
+    }, {
+      "id" : 14,
+      "name" : "shipinstruct",
+      "required" : false,
+      "type" : "string"
+    }, {
+      "id" : 15,
+      "name" : "shipmode",
+      "required" : false,
+      "type" : "string"
+    }, {
+      "id" : 16,
+      "name" : "comment",
+      "required" : false,
+      "type" : "string"
+    } ]
+  } ],
+  "default-spec-id" : 0,
+  "partition-specs" : [ {
+    "spec-id" : 0,
+    "fields" : [ {
+      "name" : "shipdate",
+      "transform" : "identity",
+      "source-id" : 11,
+      "field-id" : 1000
+    } ]
+  } ],
+  "last-partition-id" : 1000,
+  "default-sort-order-id" : 0,
+  "sort-orders" : [ {
+    "order-id" : 0,
+    "fields" : [ ]
+  } ],
+  "properties" : {
+    "write.format.default" : "PARQUET",
+    "write.object-storage.enabled" : "true",
+    "write.parquet.compression-codec" : "ZSTD"
+  },
+  "current-snapshot-id" : 3988626671889928484,
+  "refs" : {
+    "main" : {
+      "snapshot-id" : 3988626671889928484,
+      "type" : "branch"
+    }
+  },
+  "snapshots" : [ {
+    "sequence-number" : 1,
+    "snapshot-id" : 3988626671889928484,
+    "timestamp-ms" : 1685966966031,
+    "summary" : {
+      "operation" : "append",
+      "trino_query_id" : "20230605_120826_00064_h4uvw",
+      "added-data-files" : "2700",
+      "added-records" : "8443660",
+      "added-files-size" : "235145007",
+      "changed-partition-count" : "90",
+      "total-records" : "8443660",
+      "total-files-size" : "235145007",
+      "total-data-files" : "2700",
+      "total-delete-files" : "0",
+      "total-position-deletes" : "0",
+      "total-equality-deletes" : "0"
+    },
+    "manifest-list" : "s3://breezelabs-temporary-data/iceberg/lineitem/metadata/snap-3988626671889928484-1-7733a113-2437-4a4a-b284-8639c7919024.avro",
+    "schema-id" : 0
+  } ],
+  "statistics" : [ ],
+  "snapshot-log" : [ {
+    "timestamp-ms" : 1685966966031,
+    "snapshot-id" : 3988626671889928484
+  } ],
+  "metadata-log" : [ ]
+}
