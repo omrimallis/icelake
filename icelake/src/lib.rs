@@ -89,6 +89,9 @@ pub enum IcebergError {
     #[error("Iceberg error: {message}")]
     CustomError { message: String },
 
+    #[error("unsupported: {0}")]
+    Unsupported(String),
+
     /// The table's metadata file could not be located. Usually this means the table
     /// does not exist at the specified location.
     #[error("Iceberg table metadata not found at {0}")]
@@ -111,6 +114,13 @@ pub enum IcebergError {
     /// An error with creating an Iceberg table schema.
     #[error("schema error: {message}")]
     SchemaError { message: String },
+
+    #[error("value error: {0}")]
+    ValueError(String),
+
+    /// An error with manifest files.
+    #[error("manifest error: {0}")]
+    ManifestError(String),
 
     /// Error with Iceberg table partitioning.
     #[error("partition error: {message}")]

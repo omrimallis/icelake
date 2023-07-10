@@ -723,6 +723,12 @@ impl Schema {
             message: format!("error serializing table schema to json: {e}")
         })
     }
+
+    pub fn decode(input: &[u8]) -> IcebergResult<Self> {
+        serde_json::from_slice::<Self>(input).map_err(|e| IcebergError::SchemaError {
+            message: format!("error deserializing table schema from json: {e}")
+        })
+    }
 }
 
 /// Provides an interface for building Iceberg schemas with automatic field id

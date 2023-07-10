@@ -41,7 +41,7 @@ pub enum Value {
     #[serde(with = "binary_serde")]
     Binary(Vec<u8>),
     Struct(HashMap<String, Value>),
-    List(Vec<Value>),
+    List(Vec<Option<Value>>),
     // TODO
     // Map { keys: Vec<Value>, values: Vec<Value> }
 }
@@ -107,9 +107,9 @@ impl Value {
             Value::Fixed(array) => {
                 Ok(SchemaType::Primitive(PrimitiveType::Fixed(
                     u64::try_from(array.len()).map_err(|_| 
-                        IcebergError::SchemaError {
-                            message: "fixed byte-array is too long".to_string()
-                        }
+                        IcebergError::ValueError(
+                            "fixed byte-array is too long".to_string()
+                        )
                     )?
                 )))
             },
@@ -133,10 +133,16 @@ impl Value {
                         message: "can't infer schema type: list is empty".to_string()
                     })
                 } else {
+                    let field_type = fields.iter().find(|f| f.is_some())
+                        .ok_or_else(|| IcebergError::SchemaError {
+                            message: "can't infer schema type: list contains only nulls"
+                                .to_string()
+                        })
+                        .and_then(|field| field.as_ref().unwrap().get_type())?;
                     Ok(SchemaType::List(ListType::new(
                         0,
                         false,
-                        fields[0].get_type()?
+                        field_type
                     )))
                 }
             }
@@ -217,11 +223,9 @@ impl TryFrom<Value> for Vec<u8> {
                 // Days since 1970-01-01
                 let duration = date - NaiveDate::default();
                 let days = i32::try_from(duration.num_days()).map_err(|_| {
-                    IcebergError::SchemaError {
-                        message: format!(
-                            "date {date} is too far from 1970-01-01"
-                        )
-                    }
+                    IcebergError::ValueError(
+                        format!("date {date} is too far from 1970-01-01")
+                    )
                 })?;
 
                 Ok(Vec::from(days.to_le_bytes()))
@@ -235,22 +239,18 @@ impl TryFrom<Value> for Vec<u8> {
             Value::Timestamp(timestamp) => {
                 let duration = timestamp - NaiveDateTime::default();
                 let micros: i64 = duration.num_microseconds().ok_or_else(|| {
-                    IcebergError::SchemaError {
-                        message: format!(
-                            "timestamp {timestamp} is too far from 1970-01-01"
-                        )
-                    }
+                    IcebergError::ValueError(
+                        format!("timestamp {timestamp} is too far from 1970-01-01")
+                    )
                 })?;
 
                 Ok(Vec::from(micros.to_le_bytes()))
             },
             // TODO: Implement the rest
             _ => {
-                Err(IcebergError::SchemaError {
-                    message: format!(
-                        "value {value:?} can't be converted to binary form"
-                    )
-                })
+                Err(IcebergError::ValueError(
+                    format!("value {value:?} can't be converted to binary form")
+                ))
             }
         }
     }
@@ -450,7 +450,11 @@ mod tests {
             (serde_json::to_string(&value).unwrap() == r#"{"b":2,"a":1}"#)
         );
 
-        let value = Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let value = Value::List(vec![
+            Some(Value::Int(1)),
+            Some(Value::Int(2)),
+            Some(Value::Int(3))]
+        );
         assert_eq!(serde_json::to_string(&value).unwrap(), "[1,2,3]");
     }
 }

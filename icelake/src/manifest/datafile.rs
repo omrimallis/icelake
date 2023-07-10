@@ -1,19 +1,40 @@
 use std::collections::HashMap;
 
+use serde::Deserialize;
+use serde_repr::Deserialize_repr;
+
+use crate::IcebergError;
 use crate::partition::PartitionValues;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Deserialize_repr, PartialEq, Clone)]
+#[repr(u8)]
 pub enum DataFileContent {
-    Data,
-    PositionDelete,
-    EqualityDelete,
+    Data = 0,
+    PositionDelete = 1,
+    EqualityDelete = 2,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Deserialize, PartialEq, Clone)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum DataFileFormat {
     Avro,
     ORC,
     Parquet
+}
+
+impl std::str::FromStr for DataFileFormat {
+    type Err = IcebergError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "avro" => Ok(DataFileFormat::Avro),
+            "orc" => Ok(DataFileFormat::ORC),
+            "parquet" => Ok(DataFileFormat::Parquet),
+            _ => Err(IcebergError::Unsupported(
+                format!("unsupported data file format '{s}'")
+            ))
+        }
+    }
 }
 
 /// Points to a file containing table data, and stores partition values and statistics

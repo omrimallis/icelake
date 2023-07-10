@@ -5,7 +5,7 @@ use serde::{Serialize, Deserialize};
 use serde_repr::{Serialize_repr, Deserialize_repr};
 use apache_avro;
 
-use crate::{IcebergResult, IcebergTableVersion};
+use crate::{IcebergError, IcebergResult, IcebergTableVersion};
 use crate::schema::Schema;
 use crate::partition::PartitionSpec;
 use super::datafile::DataFile;
@@ -70,13 +70,18 @@ static MANIFEST_FILE_SCHEMA: &str = r#"
 "#;
 
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Deserialize_repr)]
+#[repr(u8)]
 pub enum ManifestEntryStatus {
     Existing = 0,
     Added = 1,
     Deleted = 2,
 }
 
+/// Tracks a single data or delete file in a manifest.
+///
+/// The `ManifestEntry` stores status, metrics and tracking information about the
+/// data or delete file.
 #[derive(Debug, Clone)]
 pub struct ManifestEntry {
     /// Used to track additions and deletions. Deletes are informational only and not
@@ -109,9 +114,28 @@ impl ManifestEntry {
         }
     }
 
+    pub fn status(&self) -> ManifestEntryStatus {
+        self.status.clone()
+    }
+
+    pub fn snapshot_id(&self) -> Option<i64> {
+        self.snapshot_id
+    }
+
+    pub fn sequence_number(&self) -> Option<i64> {
+        self.sequence_number
+    }
+
+    pub fn file_sequence_number(&self) -> Option<i64> {
+        self.file_sequence_number
+    }
+
+    pub fn data_file(&self) -> &DataFile {
+        &self.data_file
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ManifestContentType {
     Data,
     Deletes,
@@ -123,6 +147,20 @@ impl fmt::Display for ManifestContentType {
             ManifestContentType::Data => "data",
             ManifestContentType::Deletes => "deletes"
         })
+    }
+}
+
+impl std::str::FromStr for ManifestContentType {
+    type Err = IcebergError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "data" => Ok(ManifestContentType::Data),
+            "deletes" => Ok(ManifestContentType::Deletes),
+            _ => Err(IcebergError::ManifestError(
+                format!("invalid manifest content type '{s}'")
+            ))
+        }
     }
 }
 
@@ -166,6 +204,13 @@ impl Manifest {
 
     pub fn add_manifest_entry(&mut self, manifest: ManifestEntry) {
         self.entries.push(manifest);
+    }
+
+    pub fn add_manifest_entries(
+        &mut self,
+        entries: impl IntoIterator<Item = ManifestEntry>
+    ) {
+        self.entries.extend(entries);
     }
 
     pub fn schema(&self) -> &Schema {
@@ -349,5 +394,14 @@ impl ManifestList {
         }).collect();
 
         Ok(Self { manifests: manifests? })
+    }
+}
+
+impl IntoIterator for ManifestList {
+    type Item = ManifestFile;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.manifests.into_iter()
     }
 }

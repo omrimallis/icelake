@@ -1,7 +1,7 @@
 use bytes::Bytes;
 
 use crate::IcebergResult;
-use super::avro::serialize_manifest_to_avro;
+use super::avro::serialize_manifest;
 use super::manifest::{Manifest, ManifestContentType, ManifestFile, ManifestFileType};
 
 pub struct ManifestWriter {
@@ -14,10 +14,11 @@ impl ManifestWriter {
         Self { sequence_number, snapshot_id }
     }
 
-    /// Serializes the manifest into Avro binary format. Returns the serialized bytes
-    /// alongside with a corresponding ManifestFile object pointing to the manifest.
-    /// The ManifestFile can the be added to a ManifestList. The function encodes the
-    /// manifest but does not actually write it to storage.
+    /// Serializes the manifest into Avro binary format.
+    ///
+    /// Returns the serialized bytes alongside with a corresponding ManifestFile object
+    /// pointing to the manifest.  The ManifestFile can the be added to a ManifestList.
+    /// The function encodes the manifest but does not actually write it to storage.
     pub fn write(
         &self,
         manifest_path: &str,
@@ -26,7 +27,7 @@ impl ManifestWriter {
         let mut manifest_file = ManifestFile {
             manifest_path: manifest_path.to_string(),
             manifest_length: 0,
-            partition_spec_id: 0,
+            partition_spec_id: manifest.partition_spec().spec_id(),
             content: match manifest.content_type() {
                 ManifestContentType::Data => ManifestFileType::Data,
                 ManifestContentType::Deletes => ManifestFileType::Delete
@@ -44,7 +45,7 @@ impl ManifestWriter {
             partitions: None,
         };
 
-        let encoded = serialize_manifest_to_avro(&manifest)?;
+        let encoded = serialize_manifest(&manifest)?;
 
         // Update the manifest_length only after encoding
         manifest_file.manifest_length = encoded.len().try_into().unwrap();

@@ -38,6 +38,20 @@ impl fmt::Display for IcebergTableVersion {
     }
 }
 
+impl std::str::FromStr for IcebergTableVersion {
+    type Err = IcebergError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "1" => Ok(IcebergTableVersion::V1),
+            "2" => Ok(IcebergTableVersion::V2),
+            _ => Err(IcebergError::CustomError {
+                message: format!("invalid iceberg table version '{}'", s)
+            })
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct IcebergTableMetadata {

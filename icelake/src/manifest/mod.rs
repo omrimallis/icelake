@@ -2,6 +2,7 @@
 
 mod avro;
 mod writer;
+mod reader;
 
 pub mod datafile;
 pub mod manifest;
@@ -12,4 +13,5 @@ pub use crate::manifest::manifest::{
     Manifest, ManifestFile, ManifestContentType,
     ManifestList
 };
+pub use crate::manifest::reader::ManifestReader;
 pub use crate::manifest::writer::ManifestWriter;

@@ -2,20 +2,91 @@
 use std::collections::HashMap;
 
 use apache_avro::{
-    Error as AvroError,
+    self,
+    Reader as AvroReader,
     Writer as AvroWriter,
     schema::Schema as AvroSchema,
     types::Record as AvroRecord,
     types::Value as AvroValue
 };
+use serde::Deserialize;
 use serde_json::{json, value::Value as JsonValue};
+use chrono::{
+    NaiveDate, NaiveDateTime, NaiveTime, DateTime, Utc,
+    Days, Duration
+};
 
-use crate::{IcebergResult, IcebergError};
-use crate::schema::{Field, SchemaType, PrimitiveType, StructType};
+use crate::{IcebergResult, IcebergError, IcebergTableVersion};
+use crate::schema::{Schema, Field, SchemaType, PrimitiveType, StructType};
 use crate::value::Value;
-use crate::partition::PartitionSpec;
-use super::manifest::{Manifest, ManifestEntry, ManifestEntryStatus};
+use crate::partition::{PartitionSpec, PartitionField, PartitionValues};
+use super::manifest::{
+    Manifest, ManifestEntry, ManifestEntryStatus, ManifestContentType
+};
 use super::datafile::{DataFile, DataFileContent, DataFileFormat};
+
+impl TryFrom<Value> for AvroValue {
+    type Error = IcebergError;
+
+    fn try_from(value: Value) -> IcebergResult<Self> {
+        match value {
+            Value::Boolean(b) => Ok(AvroValue::Boolean(b)),
+            Value::Int(i) => Ok(AvroValue::Int(i)),
+            Value::Long(l) => Ok(AvroValue::Long(l)),
+            Value::Float(f) => Ok(AvroValue::Float(f)),
+            Value::Double(d) => Ok(AvroValue::Double(d)),
+            Value::Date(date) => {
+                Ok(AvroValue::Date(
+                    date.signed_duration_since(NaiveDate::default()).num_days()
+                        .try_into()
+                        .map_err(|_| IcebergError::ValueError(format!(
+                            "can't serialize date value to avro: \
+                            date {date} is too far from 1970-01-01"
+                        )))?
+                ))
+            },
+            Value::Time(time) => {
+                Ok(AvroValue::TimeMicros(
+                    time.signed_duration_since(NaiveTime::default())
+                        .num_microseconds()
+                        .ok_or_else(|| IcebergError::ValueError(format!(
+                            "can't serialize time value to avro: \
+                            time {time} is too far from 1970-01-01"
+                        )))?
+                ))
+            },
+            Value::Timestamp(ts) => {
+                Ok(AvroValue::TimestampMicros(
+                    ts.signed_duration_since(NaiveDateTime::default())
+                        .num_microseconds()
+                        .ok_or_else(|| IcebergError::ValueError(format!(
+                            "can't serialize timestamp value to avro: \
+                            timestamp {ts} is too far from 1970-01-01"
+                        )))?
+                ))
+            },
+            Value::Timestamptz(ts) => {
+                Ok(AvroValue::TimestampMicros(
+                    ts.signed_duration_since(DateTime::<Utc>::default())
+                        .num_microseconds()
+                        .ok_or_else(|| IcebergError::ValueError(format!(
+                            "can't serialize timestamptz value to avro: \
+                            timestamp {ts} is too far from 1970-01-01"
+                        )))?
+                ))
+            },
+            Value::String(s) => Ok(AvroValue::String(s)),
+            Value::Uuid(u) => Ok(AvroValue::Uuid(u)),
+            Value::Fixed(bytes) => Ok(AvroValue::Fixed(bytes.len(), bytes)),
+            Value::Binary(bytes) => Ok(AvroValue::Bytes(bytes)),
+            _ => {
+                Err(IcebergError::Unsupported(
+                    "can't serialize complex values to avro yet".to_string()
+                ))
+            }
+        }
+    }
+}
 
 /// Serializes ManifestEntry to Avro.
 struct ManifestEntrySerializer {
@@ -451,11 +522,9 @@ impl ManifestEntrySerializer {
     }
 
     /// Serializes an Iceberg Value (that might be null) to an Avro value.
-    fn serialize_opt_value(value: Option<Value>) -> Result<AvroValue, AvroError> {
+    fn serialize_opt_value(value: Option<Value>) -> IcebergResult<AvroValue> {
         Ok(if let Some(value) = value {
-            AvroValue::Union(1, Box::new(
-                apache_avro::to_value(value)?
-            ))
+            AvroValue::Union(1, Box::new(value.try_into()?))
         } else {
             AvroValue::Union(0, Box::new(AvroValue::Null))
         })
@@ -481,13 +550,13 @@ impl ManifestEntrySerializer {
         record.put("partition", AvroValue::Record(
             data_file.partition.values()
                 .iter()
-                .map(|(k, v)| -> Result<_, AvroError> {
+                .map(|(k, v)| -> IcebergResult<_> {
                     Ok((
                         k.clone(),
                         Self::serialize_opt_value(v.clone())?
                     ))
                 })
-                .collect::<Result<Vec<_>, AvroError>>()?
+                .collect::<IcebergResult<Vec<_>>>()?
         ));
         record.put("record_count", data_file.record_count);
         record.put("file_size_in_bytes", data_file.file_size_in_bytes);
@@ -568,7 +637,7 @@ impl ManifestEntrySerializer {
 }
 
 /// Serializes a manifest into binary Avro format.
-pub(super) fn serialize_manifest_to_avro(manifest: &Manifest) -> IcebergResult<Vec<u8>> {
+pub(super) fn serialize_manifest(manifest: &Manifest) -> IcebergResult<Vec<u8>> {
     let serializer = ManifestEntrySerializer::try_new(manifest.partition_spec())?;
 
     let mut writer = AvroWriter::new(serializer.schema(), Vec::new());
@@ -587,8 +656,14 @@ pub(super) fn serialize_manifest_to_avro(manifest: &Manifest) -> IcebergResult<V
         "partition-spec-id".to_string(),
         manifest.partition_spec().spec_id().to_string()
     );
-    metadata.insert("format-version".to_owned(), manifest.format_version().to_string());
-    metadata.insert("content".to_owned(), manifest.content_type().to_string());
+    metadata.insert(
+        "format-version".to_string(),
+        manifest.format_version().to_string()
+    );
+    metadata.insert(
+        "content".to_string(),
+        manifest.content_type().to_string()
+    );
     for (key, value) in metadata {
         writer.add_user_metadata(key, value)?;
     }
@@ -599,4 +674,427 @@ pub(super) fn serialize_manifest_to_avro(manifest: &Manifest) -> IcebergResult<V
     }
 
     Ok(writer.into_inner()?)
+}
+
+fn parse_metadata_item<T, R>(reader: &AvroReader<R>, key: &str) -> IcebergResult<T>
+where
+    T: std::str::FromStr,
+    R: std::io::Read,
+{
+    reader.user_metadata().get(key)
+        .ok_or_else(|| {
+            IcebergError::ManifestError(
+                format!("manifest's metadata has no key '{}'", key)
+            )
+        })
+        .and_then(|bytes| {
+            String::from_utf8(bytes.clone())
+                .map_err(|_| {
+                    IcebergError::ManifestError(format!(
+                        "manifest's metadata does not contain a valid utf-8 string \
+                        for key '{}'", key
+                    ))
+                })
+                .and_then(|s| {
+                    s.parse::<T>().map_err(|_| {
+                        IcebergError::ManifestError(format!(
+                            "maniefst's metadata does not contain a valid value \
+                            for key '{}", key
+                        ))
+                    })
+                })
+        })
+}
+
+fn deserialize_manifest_metadata<R>(
+    reader: &AvroReader<R>
+) ->  IcebergResult<Manifest>
+where
+    R: std::io::Read
+{
+    let schema = reader.user_metadata().get("schema")
+        .ok_or_else(||
+            IcebergError::ManifestError(
+                "manifest's metadata has no key 'schema'".to_string()
+            )
+        )
+        .and_then(|bytes| Schema::decode(bytes).map_err(|e|
+            IcebergError::ManifestError(
+                format!("invalid schema in manifest's metadata: {e}")
+            )
+        ))?;
+
+    let partition_fields = reader.user_metadata().get("partition-spec")
+        .ok_or_else(||
+            IcebergError::ManifestError(
+                "manifest's metadata has no key 'schema'".to_string()
+            )
+        )
+        .and_then(|bytes|
+            serde_json::from_slice::<Vec<PartitionField>>(bytes)
+                .map_err(|e| {
+                    IcebergError::ManifestError(format!(
+                        "manifest's metadata does not contain valid partition \
+                        fields: {e}"
+                    ))
+                })
+        )?;
+
+    let partition_spec_id: i32 = parse_metadata_item(&reader, "partition-spec-id")?;
+    let format_version: IcebergTableVersion = parse_metadata_item(
+        &reader, "format-version"
+    )?;
+
+    let content_type: ManifestContentType = parse_metadata_item(
+        &reader, "content"
+    )?;
+
+    if format_version != IcebergTableVersion::V2 {
+        Err(IcebergError::Unsupported(
+            format!("table version {format_version} not supported")
+        ))
+    } else {
+        Ok(Manifest::new(
+            schema.clone(),
+            PartitionSpec::try_new(
+                partition_spec_id,
+                partition_fields,
+                schema
+            )?,
+            content_type
+        ))
+    }
+
+}
+
+fn deserialize_key<'de, T>(
+    record: &'de Vec<(String, AvroValue)>,
+    key: &str
+) -> IcebergResult<T>
+where
+    T: Deserialize<'de>
+{
+    let index = record.iter().position(|(k, _v)| k == key)
+        .ok_or_else(|| IcebergError::ManifestError(format!("missing key '{key}'")))?;
+
+    let (_k, v) = record.get(index).unwrap();
+
+    Ok(apache_avro::from_value::<T>(&v)?)
+}
+
+fn deserialize_opt_key<'de, T>(
+    record: &'de Vec<(String, AvroValue)>,
+    key: &str
+) -> IcebergResult<Option<T>>
+where
+    T: Deserialize<'de>
+{
+    match record.iter().position(|(k, _v)| k == key) {
+        Some(index) => {
+            let (_k, v) = record.get(index).unwrap();
+            Ok(apache_avro::from_value::<Option<T>>(&v)?)
+        },
+        None => Ok(None)
+    }
+}
+
+fn deserialize_opt_map<'de, K, V>(
+    record: &'de Vec<(String, AvroValue)>,
+    key: &str
+) -> IcebergResult<Option<HashMap<K, V>>>
+where
+    K: Deserialize<'de> + std::hash::Hash + std::cmp::Eq,
+    V: Deserialize<'de>
+{
+    #[derive(Deserialize)]
+    struct Entry<K, V> {
+        key: K,
+        value: V,
+    }
+
+    Ok(match record.iter().position(|(k, _v)| k == key) {
+        Some(index) => {
+            let (_k, v) = record.get(index).unwrap();
+
+            let entries = apache_avro::from_value::<Option<Vec<Entry<K, V>>>>(&v)?;
+
+            // convert vector of Entry<K,V> into HashMap<K,V>
+            entries.map(|vec| {
+                vec.into_iter()
+                    .map(|entry| (entry.key, entry.value))
+                    .collect()
+            })
+        },
+        None => None
+    })
+}
+
+fn deserialize_binary_entry<'de, K>(
+    record: &'de Vec<(String, AvroValue)>
+) -> IcebergResult<(K, Vec<u8>)>
+where
+    K: Deserialize<'de> + std::hash::Hash + std::cmp::Eq,
+{
+    let key = record.iter().find(|(k, _v)| k == "key")
+        .ok_or_else(|| IcebergError::ManifestError(
+            "invalid map entry: missing key".to_string()
+        ))
+        .and_then(|(_k, v)| {
+            apache_avro::from_value::<K>(v)
+                .map_err(|e| IcebergError::AvroError { source: e })
+        })?;
+
+    let value = record.iter().find(|(k, _v)| k == "value")
+        .ok_or_else(|| IcebergError::ManifestError(
+            "invalid map entry: missing value".to_string()
+        ))
+        .and_then(|(_k, v)| {
+            match v {
+                AvroValue::Bytes(bytes) => Ok(bytes),
+                _ => {
+                    Err(IcebergError::ManifestError(format!(
+                        "invalid map entry: expected byte array, found: {v:?}"
+                    )))
+                }
+            }
+        })?;
+
+    Ok((key, value.clone()))
+}
+
+/// Deserialized an Avro map of keys to binary values.
+/// Couldn't make it work using Vec<u8>, so deserialize everything manually.
+fn deserialize_opt_binary_map<'de, K>(
+    record: &'de Vec<(String, AvroValue)>,
+    key: &str
+) -> IcebergResult<Option<HashMap<K, Vec<u8>>>>
+where
+    K: Deserialize<'de> + std::hash::Hash + std::cmp::Eq,
+{
+    Ok(record.iter().find(|(k, _v)| k == key)
+        .map(|(_k, v)| {
+            match v {
+                AvroValue::Null => Ok(None),
+                AvroValue::Union(_i, u) => {
+                    match &**u {
+                        AvroValue::Null => Ok(None),
+                        AvroValue::Array(array) => {
+                            Ok(Some(array.iter().map(|entry| {
+                                match entry {
+                                    AvroValue::Record(record) => {
+                                        deserialize_binary_entry::<'de>(record)
+                                    },
+                                    _ => {
+                                        Err(IcebergError::ManifestError(
+                                            format!("expected record, got {entry:?}")
+                                        ))
+                                    }
+                                }
+                            }).collect::<IcebergResult<Vec<_>>>()?))
+
+                        },
+                        _ => {
+                            Err(IcebergError::ManifestError(
+                                format!("expected array, got {u:?}")
+                            ))
+                        }
+                    }
+                },
+                _ => {
+                    Err(IcebergError::ManifestError(
+                        format!("expected union, got {v:?}")
+                    ))
+                }
+            }
+        })
+        .transpose()?
+        .flatten()
+        .map(|vec| HashMap::from_iter(vec)))
+}
+
+fn deserialize_value(value: AvroValue) -> IcebergResult<Option<Value>> {
+    match value {
+        AvroValue::Null => Ok(None),
+        AvroValue::Boolean(b) => Ok(Some(Value::Boolean(b))),
+        AvroValue::Int(i) => Ok(Some(Value::Int(i))),
+        AvroValue::Long(l) => Ok(Some(Value::Long(l))),
+        AvroValue::Float(f) => Ok(Some(Value::Float(f))),
+        AvroValue::Double(d) => Ok(Some(Value::Double(d))),
+        AvroValue::Bytes(bytes) => Ok(Some(Value::Binary(bytes))),
+        AvroValue::String(s) => Ok(Some(Value::String(s))),
+        AvroValue::Fixed(_size, bytes) => Ok(Some(Value::Fixed(bytes))),
+        AvroValue::Array(values) => {
+            Ok(Some(Value::List(
+                values
+                    .into_iter()
+                    .map(|v| deserialize_value(v))
+                    .collect::<IcebergResult<Vec<_>>>()?
+            )))
+        },
+        AvroValue::Date(days) => {
+            // 'days' is the number of days since 1970-01-01
+            let date = NaiveDate::default().checked_add_days(
+                Days::new(days.try_into().map_err(|_| {
+                    IcebergError::ValueError(format!(
+                        "can't create a date value from number of days {days}",
+                    ))
+                })?)
+            ).ok_or_else(||
+                IcebergError::ValueError(format!(
+                    "can't create a date value from number of days {days}"
+                ))
+            )?;
+
+            Ok(Some(Value::Date(date)))
+        },
+        AvroValue::TimeMillis(millis) => {
+            let (time, _) = NaiveTime::default().overflowing_add_signed(
+                Duration::milliseconds(millis.into())
+            );
+
+            Ok(Some(Value::Time(time)))
+        },
+        AvroValue::TimeMicros(micros) => {
+            let (time, _) = NaiveTime::default().overflowing_add_signed(
+                Duration::microseconds(micros)
+            );
+
+            Ok(Some(Value::Time(time)))
+        },
+        AvroValue::TimestampMillis(millis) => {
+            let ts = NaiveDateTime::from_timestamp_millis(millis)
+                .ok_or_else(||
+                    IcebergError::ValueError(
+                        "avro timestamp value is out of range".to_string()
+                    )
+                )?;
+
+            Ok(Some(Value::Timestamp(ts)))
+        },
+        AvroValue::TimestampMicros(micros) => {
+            let ts = NaiveDateTime::from_timestamp_micros(micros)
+                .ok_or_else(||
+                    IcebergError::ValueError(
+                        "avro timestamp value is out of range".to_string()
+                    )
+                )?;
+
+            Ok(Some(Value::Timestamp(ts)))
+        },
+        AvroValue::Uuid(uuid) => Ok(Some(Value::Uuid(uuid))),
+        _ => {
+            Err(IcebergError::Unsupported(format!(
+                "can't deserialize avro value {value:?} yet"
+            )))
+        }
+    }
+}
+
+fn deserialize_opt_value(value: AvroValue) -> IcebergResult<Option<Value>> {
+    match value {
+        AvroValue::Null => Ok(None),
+        AvroValue::Union(_i, u) => {
+            deserialize_value(*u)
+        },
+        _ => Err(IcebergError::ManifestError(
+            format!("expected union or null, got {value:?}")
+        ))
+    }
+}
+
+fn deserialize_partition<'de>(
+    record: &'de Vec<(String, AvroValue)>,
+    key: &str
+) -> IcebergResult<PartitionValues> {
+    let index = record.iter().position(|(k, _v)| k == key)
+        .ok_or_else(|| IcebergError::ManifestError(format!("missing key '{key}'")))?;
+
+    let (_k, v) = record.get(index).unwrap();
+
+    let partition_record = match v {
+        AvroValue::Record(record) => Ok(record),
+        _ => Err(IcebergError::ManifestError(format!("expected record, got {v:?}")))
+    }?;
+
+    Ok(PartitionValues::from_iter(
+        partition_record.into_iter().map(|(k, v)| {
+            Ok((
+                k.clone(),
+                deserialize_opt_value(v.clone())?
+            ))
+        }).collect::<IcebergResult<Vec<_>>>()?
+    ))
+}
+
+fn deserialize_data_file(value: AvroValue) -> IcebergResult<DataFile> {
+    let record = match value {
+        AvroValue::Record(record) => Ok(record),
+        _ => Err(IcebergError::ManifestError(
+            format!("expected record, got {value:?}")
+        ))
+    }?;
+
+    Ok(DataFile {
+        content: deserialize_key(&record, "content")?,
+        file_path: deserialize_key(&record, "file_path")?,
+        file_format: deserialize_key::<String>(&record, "file_format")?.parse()?,
+        partition: deserialize_partition(&record, "partition")?,
+        record_count: deserialize_key(&record, "record_count")?,
+        file_size_in_bytes: deserialize_key(&record, "file_size_in_bytes")?,
+        column_sizes: deserialize_opt_map(&record, "column_sizes")?,
+        value_counts: deserialize_opt_map(&record, "value_counts")?,
+        null_value_counts: deserialize_opt_map(&record, "null_value_counts")?,
+        nan_value_counts: deserialize_opt_map(&record, "nan_value_counts")?,
+        distinct_counts: deserialize_opt_map(&record, "distinct_counts")?,
+        lower_bounds: deserialize_opt_binary_map(&record, "lower_bounds")?,
+        upper_bounds: deserialize_opt_binary_map(&record, "upper_bounds")?,
+        key_metadata: deserialize_opt_key(&record, "key_metadata")?,
+        split_offsets: deserialize_opt_key(&record, "split_offsets")?,
+        equality_ids: deserialize_opt_key(&record, "equality_ids")?,
+        sort_order_id: deserialize_opt_key(&record, "sort_order_id")?,
+    })
+}
+
+fn deserialize_manifest_entry(value: AvroValue) -> IcebergResult<ManifestEntry> {
+    let record = match value {
+        AvroValue::Record(record) => Ok(record),
+        _ => Err(IcebergError::ManifestError(
+            format!("expected record, got {value:?}")
+        ))
+    }?;
+
+    let status = deserialize_key(&record, "status")?;
+    let snapshot_id = deserialize_opt_key(&record, "snapshot_id")?;
+    let sequence_number = deserialize_opt_key(&record, "sequence_number")?;
+    let file_sequence_number = deserialize_opt_key(&record, "file_sequence_number")?;
+
+    Ok(ManifestEntry {
+        status: status,
+        snapshot_id: snapshot_id,
+        sequence_number: sequence_number,
+        file_sequence_number: file_sequence_number,
+        data_file: deserialize_data_file(
+            record.into_iter().find(|(k, _v)| k == "data_file")
+                .ok_or_else(|| IcebergError::ManifestError(
+                    format!("missing key 'data_File'")
+                ))
+                .map(|(_k, v)| v)?
+        )?
+    })
+}
+
+pub(super) fn deserialize_manifest(input: &[u8]) -> IcebergResult<Manifest> {
+    let reader = AvroReader::<&[u8]>::new(input)?;
+
+    let mut manifest = deserialize_manifest_metadata(&reader)?;
+    manifest.add_manifest_entries(
+        reader.into_iter()
+            .map(|value| {
+                value.map_err(|e| IcebergError::AvroError { source: e })
+                    .and_then(|v| deserialize_manifest_entry(v))
+            })
+            .collect::<IcebergResult<Vec<ManifestEntry>>>()?
+    );
+
+    Ok(manifest)
 }
