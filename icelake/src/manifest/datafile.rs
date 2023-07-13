@@ -39,7 +39,7 @@ impl std::str::FromStr for DataFileFormat {
 
 /// Points to a file containing table data, and stores partition values and statistics
 /// for the data.
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct DataFile {
     /// Type of content stored by the data file: data, equality deletes, or position
     /// deletes.

@@ -24,9 +24,11 @@ impl ManifestWriter {
         manifest_path: &str,
         manifest: &Manifest
     ) -> IcebergResult<(Bytes, ManifestFile)> {
-        let mut manifest_file = ManifestFile {
+        let encoded = serialize_manifest(&manifest)?;
+
+        let manifest_file = ManifestFile {
             manifest_path: manifest_path.to_string(),
-            manifest_length: 0,
+            manifest_length: encoded.len().try_into().unwrap(),
             partition_spec_id: manifest.partition_spec().spec_id(),
             content: match manifest.content_type() {
                 ManifestContentType::Data => ManifestFileType::Data,
@@ -44,11 +46,6 @@ impl ManifestWriter {
             deleted_rows_count: manifest.deleted_rows_count(),
             partitions: None,
         };
-
-        let encoded = serialize_manifest(&manifest)?;
-
-        // Update the manifest_length only after encoding
-        manifest_file.manifest_length = encoded.len().try_into().unwrap();
         
         Ok((Bytes::from(encoded), manifest_file))
     }

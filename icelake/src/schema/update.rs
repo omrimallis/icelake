@@ -87,6 +87,24 @@ impl SchemaUpdate {
             self.promotions.is_none()
     }
 
+    pub fn added_fields(&self) -> Box<dyn Iterator<Item = (i32, &Field)> + '_> {
+        if let Some(adds) = &self.adds {
+            Box::new(adds.iter().flat_map(|(parent_id, fields)|
+                fields.iter().map(|field| (*parent_id, field))
+            ))
+        } else {
+            Box::new(std::iter::empty())
+        }
+    }
+
+    pub fn deleted_fields(&self) -> Box<dyn Iterator<Item = i32> + '_> {
+        if let Some(deletes) = &self.deletes {
+            Box::new(deletes.iter().cloned())
+        } else {
+            Box::new(std::iter::empty())
+        }
+    }
+
     fn apply_field(&self, field: &Field) -> Field {
         let update = self.updates.as_ref().and_then(|updates|
             updates.get(&field.id())
@@ -698,7 +716,10 @@ mod tests {
 
         let target = Schema::new(0, vec![
             Field::new_primitive(1, "id", true, PrimitiveType::Long),
-            Field::new_primitive(2, "ts", false, PrimitiveType::Timestamp)
+            Field::new_primitive(2, "ts", false, PrimitiveType::Timestamp),
+            Field::new_list(3, "items", true,
+                Field::new_primitive(4, "element", true, PrimitiveType::String)
+            )
         ]);
 
         let schema_update = SchemaUpdate::between(&base, &target).unwrap();
@@ -708,7 +729,10 @@ mod tests {
         assert_eq!(
             schema_update.adds.unwrap().get(&-1).unwrap(),
             &vec![
-                Field::new_primitive(2, "ts", false, PrimitiveType::Timestamp)
+                Field::new_primitive(2, "ts", false, PrimitiveType::Timestamp),
+                Field::new_list(3, "items", true,
+                    Field::new_primitive(4, "element", true, PrimitiveType::String)
+                )
             ]
         );
     }

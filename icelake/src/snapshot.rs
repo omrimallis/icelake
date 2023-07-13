@@ -29,10 +29,10 @@ pub enum SnapshotOperation {
 /// Summarises the changes in the snapshot.
 pub struct SnapshotSummary {
     /// The type of operation in the snapshot
-    pub operation: Option<SnapshotOperation>,
+    operation: Option<SnapshotOperation>,
     /// Other summary data.
     #[serde(flatten)]
-    pub stats: HashMap<String, String>,
+    stats: HashMap<String, String>,
 }
 
 impl SnapshotSummary {
@@ -42,10 +42,10 @@ impl SnapshotSummary {
 }
 
 pub struct SnapshotSummaryBuilder {
-    pub operation: Option<SnapshotOperation>,
+    operation: Option<SnapshotOperation>,
     // In the SnapshotSummary, stats should be encoded as strings.
     // However, in practice, they are all integers.
-    pub stats: HashMap<String, i64>,
+    stats: HashMap<String, i64>,
 }
 
 impl SnapshotSummaryBuilder {
@@ -80,21 +80,32 @@ impl SnapshotSummaryBuilder {
             .or_insert(count);
     }
 
-    pub fn add_data_files<'a>(&'a mut self, count: i64) -> &'a mut Self {
-        self.add_to_stat("added-data-files", count);
-        self.add_to_stat("total-data-files", count);
+    pub fn added_data_file(&mut self, records: i64, size: i64) -> &Self {
+        self.add_to_stat("added-data-files", 1);
+        self.add_to_stat("total-data-files", 1);
+
+        self.add_to_stat("added-records", records);
+        self.add_to_stat("total-records", records);
+
+        self.add_to_stat("added-files-size", size);
+        self.add_to_stat("total-files-size", size);
+
         self
     }
 
-    pub fn add_records<'a>(&'a mut self, count: i64) -> &'a mut Self {
-        self.add_to_stat("added-records", count);
-        self.add_to_stat("total-records", count);
+    pub fn existing_data_file(&mut self, records: i64, size: i64) -> &Self {
+        self.add_to_stat("total-data-files", 1);
+        self.add_to_stat("total-records", records);
+        self.add_to_stat("total-files-size", size);
+
         self
     }
 
-    pub fn add_file_sizes<'a>(&'a mut self, count: i64) -> &'a mut Self {
-        self.add_to_stat("added-files-size", count);
-        self.add_to_stat("total-files-size", count);
+    pub fn removed_data_file(&mut self, records: i64, size: i64) -> &Self {
+        self.add_to_stat("deleted-data-files", 1);
+        self.add_to_stat("deleted-records", records);
+        self.add_to_stat("removed-files-size", size);
+
         self
     }
 

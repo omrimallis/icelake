@@ -1,3 +1,4 @@
+//! Tests for manifest files serialization and deserialization.
 use chrono::NaiveDate;
 
 use icelake::IcebergTableVersion;

@@ -10,7 +10,7 @@ pub mod manifest;
 pub use crate::manifest::datafile::{DataFile, DataFileContent, DataFileFormat};
 pub use crate::manifest::manifest::{
     ManifestEntry, ManifestEntryStatus,
-    Manifest, ManifestFile, ManifestContentType,
+    Manifest, ManifestFile, ManifestFileType, ManifestContentType,
     ManifestList
 };
 pub use crate::manifest::reader::ManifestReader;

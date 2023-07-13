@@ -118,6 +118,18 @@ impl ManifestEntry {
         self.status.clone()
     }
 
+    pub fn existing(&self) -> bool {
+        self.status == ManifestEntryStatus::Existing
+    }
+
+    pub fn added(&self) -> bool {
+        self.status == ManifestEntryStatus::Added
+    }
+
+    pub fn deleted(&self) -> bool {
+        self.status == ManifestEntryStatus::Deleted
+    }
+
     pub fn snapshot_id(&self) -> Option<i64> {
         self.snapshot_id
     }
@@ -132,6 +144,11 @@ impl ManifestEntry {
 
     pub fn data_file(&self) -> &DataFile {
         &self.data_file
+    }
+
+    pub fn with_status(mut self, status: ManifestEntryStatus) -> Self {
+        self.status = status;
+        self
     }
 }
 
@@ -237,6 +254,10 @@ impl Manifest {
         &self.entries
     }
 
+    pub fn into_entries(self) -> impl Iterator<Item = ManifestEntry> {
+        self.entries.into_iter()
+    }
+
     pub fn min_sequence_number(&self) -> Option<i64> {
         self.entries.iter()
             .filter_map(|entry| entry.sequence_number)
@@ -314,7 +335,7 @@ pub struct PartitionFieldSummary {
     upper_bound: Option<Vec<u8>>,
 }
 
-#[derive(Debug, Serialize_repr, Deserialize_repr)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize_repr, Deserialize_repr)]
 #[repr(i32)]
 pub enum ManifestFileType {
     Data = 0,
@@ -373,6 +394,10 @@ impl ManifestList {
 
     pub fn is_empty(&self) -> bool {
         self.manifests.is_empty()
+    }
+
+    pub fn manifest_files(&self) -> &Vec<ManifestFile> {
+        &self.manifests
     }
 
     /// Encodes the manifest list to an Avro manifest list file.
