@@ -726,9 +726,12 @@ mod tests {
         assert!(schema_update.updates.is_none());
         assert!(schema_update.deletes.is_none());
         assert!(schema_update.promotions.is_none());
+
+        let mut adds = schema_update.adds.unwrap().get(&-1).unwrap().clone();
+        adds.sort_by_key(|field| field.id());
         assert_eq!(
-            schema_update.adds.unwrap().get(&-1).unwrap(),
-            &vec![
+            adds,
+            vec![
                 Field::new_primitive(2, "ts", false, PrimitiveType::Timestamp),
                 Field::new_list(3, "items", true,
                     Field::new_primitive(4, "element", true, PrimitiveType::String)
