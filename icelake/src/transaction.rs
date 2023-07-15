@@ -323,10 +323,11 @@ impl OverwriteFilesOperation {
             .map(|manifest_file| {
                 let storage = table.storage();
                 let manifest_path = manifest_file.manifest_path.clone();
+                let reader = ManifestReader::for_manifest_file(manifest_file);
                 tokio::spawn(async move {
                     let path = storage.create_path_from_url(&manifest_path)?;
                     let bytes = storage.get(&path).await?;
-                    ManifestReader::new().read(&bytes)
+                    reader.read(&bytes)
                 })
             });
 

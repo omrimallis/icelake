@@ -62,7 +62,8 @@ impl TestTable {
         let storage = self.table.storage();
         let path = storage.create_path_from_url(&manifest_file.manifest_path).unwrap();
         let bytes = storage.get(&path).await.unwrap();
-        ManifestReader::new().read(&bytes).unwrap()
+        ManifestReader::for_manifest_file(manifest_file)
+            .read(&bytes).unwrap()
     }
 }
 
@@ -171,10 +172,13 @@ async fn overwrite_operation() {
 
     let entry = manifest.entries().iter().find(|entry| entry.deleted()).unwrap();
     assert_eq!(entry.data_file(), &datafile1);
+    assert_eq!(entry.sequence_number().unwrap(), 1);
 
     let entry = manifest.entries().iter().find(|entry| entry.existing()).unwrap();
     assert_eq!(entry.data_file(), &datafile2);
+    assert_eq!(entry.sequence_number().unwrap(), 2);
 
     let entry = manifest.entries().iter().find(|entry| entry.added()).unwrap();
     assert_eq!(entry.data_file(), &datafile3);
+    assert_eq!(entry.sequence_number().unwrap(), 3);
 }

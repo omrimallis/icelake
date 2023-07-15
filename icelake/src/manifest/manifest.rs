@@ -254,6 +254,10 @@ impl Manifest {
         &self.entries
     }
 
+    pub fn entries_mut(&mut self) -> &mut Vec<ManifestEntry> {
+        &mut self.entries
+    }
+
     pub fn into_entries(self) -> impl Iterator<Item = ManifestEntry> {
         self.entries.into_iter()
     }

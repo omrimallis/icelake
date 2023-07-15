@@ -85,12 +85,13 @@ fn serialize_manifest() {
         data_file
     ));
 
-    let (bytes, _manifest_file) = ManifestWriter::new(1, snapshot_id)
+    let (bytes, manifest_file) = ManifestWriter::new(1, snapshot_id)
         .write("/tmp/manifest", &manifest)
         .unwrap();
 
     // Now see that we can read it back.
-    ManifestReader::new().read(&bytes).unwrap();
+    ManifestReader::for_manifest_file(&manifest_file)
+        .read(&bytes).unwrap();
 }
 
 /// Deserialize a manifest file created by a different engine (Athena)
@@ -102,7 +103,7 @@ fn deserialize_manifest() {
         )
     ).unwrap();
 
-    let reader = ManifestReader::new();
+    let reader = ManifestReader::new(1, 1);
 
     let manifest = reader.read(&bytes).unwrap();
 
@@ -121,8 +122,8 @@ fn deserialize_manifest() {
     for entry in manifest.entries() {
         assert_eq!(entry.status(), ManifestEntryStatus::Added);
         assert_eq!(entry.snapshot_id(), Some(3988626671889928484));
-        assert_eq!(entry.sequence_number(), None);
-        assert_eq!(entry.file_sequence_number(), None);
+        assert_eq!(entry.sequence_number(), Some(1));
+        assert_eq!(entry.file_sequence_number(), Some(1));
     }
 
     let data_file = manifest.entries()[0].data_file();
