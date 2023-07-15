@@ -69,12 +69,17 @@ static MANIFEST_FILE_SCHEMA: &str = r#"
 }
 "#;
 
-
+/// Indicates the status of the [`ManifestEntry`] at the time the manifest was written.
 #[derive(Debug, PartialEq, Eq, Clone, Deserialize_repr)]
 #[repr(u8)]
 pub enum ManifestEntryStatus {
+    /// The [`ManifestEntry`] already existed in a previous manifest when the
+    /// manifest containing the entry was written.
     Existing = 0,
+    /// The [`ManifestEntry`] is a new entry.
     Added = 1,
+    /// The [`ManifestEntry`] existed in a previous manifest but should be treated as
+    /// deleted (ignored) in the new manifest containing the entry.
     Deleted = 2,
 }
 
@@ -181,6 +186,8 @@ impl std::str::FromStr for ManifestContentType {
     }
 }
 
+/// An immutable list of data or delete files along with tracking information.
+///
 /// An Iceberg manifest stores a list of data or delete files, along with each
 /// file’s partition data tuple, metrics, and tracking information.
 /// A manifest stores files for a single partition spec. The partition spec of each

@@ -4,20 +4,24 @@ use crate::IcebergResult;
 use super::avro::serialize_manifest;
 use super::manifest::{Manifest, ManifestContentType, ManifestFile, ManifestFileType};
 
+/// Encodes [`Manifest`]s to binary avro format.
 pub struct ManifestWriter {
     sequence_number: i64,
     snapshot_id: i64,
 }
 
 impl ManifestWriter {
+    /// Initializes a new writer that encodes manifests for the given snapshot id
+    /// and sequence number.
     pub fn new(sequence_number: i64, snapshot_id: i64) -> Self {
         Self { sequence_number, snapshot_id }
     }
 
-    /// Serializes the manifest into Avro binary format.
+    /// Encodes the manifest into Avro binary format.
     ///
-    /// Returns the serialized bytes alongside with a corresponding ManifestFile object
-    /// pointing to the manifest.  The ManifestFile can the be added to a ManifestList.
+    /// Returns the serialized bytes alongside with a corresponding [`ManifestFile`]
+    /// describing the manifest.  The `ManifestFile` can the be added to a
+    /// [`ManifestList`](super::manifest::ManifestList).
     /// The function encodes the manifest but does not actually write it to storage.
     pub fn write(
         &self,
